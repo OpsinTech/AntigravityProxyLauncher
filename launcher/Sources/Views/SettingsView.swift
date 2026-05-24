@@ -37,6 +37,9 @@ struct SettingsView: View {
 
                         Toggle("修复失败时自动导出诊断包", isOn: $appState.settingsDraft.autoExportDiagnosticsOnFailure)
                             .toggleStyle(.switch)
+
+                        Toggle("修复完成后自动启动应用", isOn: $appState.settingsDraft.autoLaunchAfterPatch)
+                            .toggleStyle(.switch)
                     }
                     .padding(20)
                     .background(Color.gray.opacity(0.06))

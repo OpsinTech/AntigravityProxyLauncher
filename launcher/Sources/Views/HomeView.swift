@@ -50,6 +50,9 @@ private struct OverviewView: View {
     @EnvironmentObject private var authViewModel: AuthViewModel
     @EnvironmentObject private var quotaViewModel: QuotaViewModel
 
+    @State private var showCleanEnvironmentConfirm = false
+    @State private var showClearLogsConfirm = false
+
     private var isOverviewTabActive: Bool {
         appState.selectedTab == .overview
     }
@@ -145,7 +148,7 @@ private struct OverviewView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 200)
+                .frame(width: 320)
                 .disabled(appState.isRunningWorkflow)
             }
 
@@ -268,12 +271,36 @@ private struct OverviewView: View {
                 }
 
                 Button("清理环境") {
-                    appState.cleanEnvironment()
+                    showCleanEnvironmentConfirm = true
                 }
                 .disabled(appState.isRunningWorkflow)
+                .confirmationDialog(
+                    "确认清理环境",
+                    isPresented: $showCleanEnvironmentConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button("确认清理", role: .destructive) {
+                        appState.cleanEnvironment()
+                    }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("将删除当前 \(appState.selectedApp.displayName) 的解锁版应用及相关配置文件。")
+                }
 
                 Button("清理日志") {
-                    appState.clearLogs()
+                    showClearLogsConfirm = true
+                }
+                .confirmationDialog(
+                    "确认清理日志",
+                    isPresented: $showClearLogsConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button("确认清理", role: .destructive) {
+                        appState.clearLogs()
+                    }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("将删除修复日志和运行日志文件，此操作不可恢复。")
                 }
 
                 Spacer(minLength: 8)
@@ -349,7 +376,7 @@ private struct OverviewView: View {
         }
         .padding(24)
         .onAppear {
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 appState.refresh()
                 authViewModel.reloadState()
                 quotaViewModel.loadCachedSnapshot(for: authViewModel.activeAccountId)

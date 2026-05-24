@@ -172,27 +172,9 @@ final class PatchService {
     /// 签名后清理隔离属性，确保修复后的应用不会被 Gatekeeper 拦截
     private func clearExtendedAttributesAfterSigning() throws {
         let appPath = FileSystemPaths.patchedApp.path
-        
-        // 清理整个应用包的隔离属性
+
+        // xattr -cr 递归清理整个 app bundle 的所有扩展属性（单次调用）
         _ = try? CommandRunner.run("/usr/bin/xattr", ["-cr", appPath])
-        
-        // 额外清理常见的问题属性
-        let attributesToRemove = [
-            "com.apple.quarantine",
-            "com.apple.metadata:kMDItemWhereFroms",
-            "com.apple.downloadedDate"
-        ]
-        
-        for attr in attributesToRemove {
-            _ = try? CommandRunner.run("/usr/bin/xattr", ["-d", attr, appPath])
-        }
-        
-        // 递归清理应用包内的所有文件
-        if let enumerator = FileManager.default.enumerator(at: FileSystemPaths.patchedApp, includingPropertiesForKeys: nil) {
-            for case let url as URL in enumerator {
-                _ = try? CommandRunner.run("/usr/bin/xattr", ["-cr", url.path])
-            }
-        }
     }
     
     /// 配置 Gemini 应用的特殊权限

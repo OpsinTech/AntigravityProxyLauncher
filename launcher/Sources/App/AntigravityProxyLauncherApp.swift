@@ -63,5 +63,76 @@ struct AntigravityProxyLauncherApp: App {
                 .environmentObject(quotaViewModel)
                 .frame(minWidth: 820, minHeight: 560)
         }
+
+        MenuBarExtra {
+            menuBarContent
+                .environmentObject(appState)
+                .environmentObject(authViewModel)
+                .environmentObject(quotaViewModel)
+        } label: {
+            menuBarIcon
+        }
+    }
+
+    @ViewBuilder
+    private var menuBarContent: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(appState.status.title)
+                .font(.headline)
+            Text(appState.selectedApp.displayName)
+
+            Divider()
+
+            if appState.status == .running {
+                Button("关闭 \(appState.selectedApp.displayName)") {
+                    appState.stopPatchedAppOnly()
+                }
+            } else {
+                Button("启动 \(appState.selectedApp.displayName)") {
+                    appState.launchPatchedAppOnly()
+                }
+                .disabled(appState.status == .patching || appState.status == .launching)
+            }
+
+            if appState.status != .patching && appState.status != .launching {
+                Button("修复 \(appState.selectedApp.displayName)") {
+                    appState.patchOnly()
+                }
+            }
+
+            Divider()
+
+            Button("显示主窗口") {
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                if let window = NSApplication.shared.windows.first(where: { $0.title.contains("Antigravity") }) {
+                    window.makeKeyAndOrderFront(nil)
+                }
+            }
+
+            Divider()
+
+            Button("退出 Launcher") {
+                NSApplication.shared.terminate(nil)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(minWidth: 180)
+    }
+
+    private var menuBarIcon: some View {
+        let color: Color = {
+            switch appState.status {
+            case .running: return .green
+            case .patching, .launching, .cleaning: return .blue
+            case .patchedReady: return .yellow
+            case .error, .targetAppMissing, .targetAppUnsupportedVersion, .repairRequired: return .red
+            case .targetAppInstalled, .patchedAppMissing, .patchedAppOutdated: return .orange
+            }
+        }()
+
+        return Circle()
+            .fill(color)
+            .frame(width: 10, height: 10)
     }
 }

@@ -95,6 +95,9 @@ enum FileSystemPaths {
         case .antigravity:
             return FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/Antigravity", isDirectory: true)
+        case .antigravityIDE:
+            return FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/Antigravity IDE", isDirectory: true)
         case .gemini:
             return appSupportRoot.appendingPathComponent("Config", isDirectory: true)
         }
