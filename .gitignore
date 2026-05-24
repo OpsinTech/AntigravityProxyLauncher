@@ -33,4 +33,7 @@ dist/
 
 # Logs files
 *.log
-trae/
+.trae/
+.claude/   
+build_output/
+docs/

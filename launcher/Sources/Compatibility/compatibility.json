@@ -5,6 +5,12 @@
       "minVersion": "0.1.0",
       "maxVersion": "99.99.99",
       "bundleIdentifier": "com.google.antigravity",
+      "executableRelativePath": "Contents/MacOS/Antigravity"
+    },
+    {
+      "minVersion": "0.1.0",
+      "maxVersion": "99.99.99",
+      "bundleIdentifier": "com.google.antigravity-ide",
       "executableRelativePath": "Contents/MacOS/Electron"
     },
     {

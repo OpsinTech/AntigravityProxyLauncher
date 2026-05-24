@@ -41,8 +41,11 @@ final class LauncherAppState: ObservableObject {
     
     @Published var selectedApp: TargetApp = .antigravity {
         didSet {
+            guard oldValue != selectedApp else { return }
             UserDefaults.standard.set(selectedApp.rawValue, forKey: "SelectedTargetApp")
             FileSystemPaths.activeApp = selectedApp
+            launchService.resetForTargetChange()
+            appendLog("---------- 切换到 \(selectedApp.displayName) ----------")
             refresh()
         }
     }
@@ -52,6 +55,14 @@ final class LauncherAppState: ObservableObject {
            let app = TargetApp(rawValue: saved) {
             self.selectedApp = app
             FileSystemPaths.activeApp = app
+        }
+
+        launchService.onAppTerminated = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.appendLog("修复版应用已退出")
+                self.refresh()
+            }
         }
     }
 
@@ -119,6 +130,7 @@ final class LauncherAppState: ObservableObject {
 
     func patchOnly() {
         guard !isRunningWorkflow else { return }
+        isRunningWorkflow = true
 
         Task {
             await runWorkflow()
@@ -127,6 +139,7 @@ final class LauncherAppState: ObservableObject {
 
     func launchPatchedAppOnly() {
         guard !isRunningWorkflow else { return }
+        isRunningWorkflow = true
 
         appendLog("直接启动已修复的应用...")
         status = .launching
@@ -134,12 +147,18 @@ final class LauncherAppState: ObservableObject {
         Task {
             do {
                 try await launchService.launchPatchedApp(settings: settingsDraft)
-                appendLog("启动成功！")
-                status = .running
+                await MainActor.run {
+                    self.appendLog("启动成功！")
+                    self.status = .running
+                    self.isRunningWorkflow = false
+                }
             } catch {
-                appendLog("启动失败: \(error.localizedDescription)")
-                LauncherLogger.error("Direct launch failed: \(error)")
-                status = .error("启动失败: \(error.localizedDescription)")
+                await MainActor.run {
+                    self.appendLog("启动失败: \(error.localizedDescription)")
+                    LauncherLogger.error("Direct launch failed: \(error)")
+                    self.status = .error("启动失败: \(error.localizedDescription)")
+                    self.isRunningWorkflow = false
+                }
             }
         }
     }
@@ -147,18 +166,34 @@ final class LauncherAppState: ObservableObject {
     func stopPatchedAppOnly() {
         guard !isRunningWorkflow else { return }
 
+        isRunningWorkflow = true
         appendLog("正在关闭修复版应用...")
-        launchService.stopManagedPatchedApp()
 
-        if launchService.isPatchedAppRunning() {
-            let message = "关闭失败：检测到修复版仍在运行"
-            appendLog(message)
-            status = .error(message)
-            return
+        Task {
+            try? await runBlocking {
+                self.launchService.stopManagedPatchedApp()
+            }
+
+            let stillRunning = await MainActor.run {
+                self.launchService.isPatchedAppRunning()
+            }
+
+            if stillRunning {
+                let message = "关闭失败：检测到修复版仍在运行"
+                await MainActor.run {
+                    self.appendLog(message)
+                    self.status = .error(message)
+                    self.isRunningWorkflow = false
+                }
+                return
+            }
+
+            await MainActor.run {
+                self.appendLog("修复版已关闭")
+                self.isRunningWorkflow = false
+                self.refresh()
+            }
         }
-
-        appendLog("修复版已关闭")
-        refresh()
     }
 
     func clearLogs() {
@@ -563,9 +598,25 @@ final class LauncherAppState: ObservableObject {
             markStep(.verify, as: .completed)
             appendLog("修复结果验证通过")
 
-            markStep(.launch, as: .completed, detail: "待手动启动")
-            status = .patchedReady
-            appendLog("修复完成，可手动启动修复版")
+            if settingsDraft.autoLaunchAfterPatch {
+                markStep(.launch, as: .running)
+                appendLog("自动启动修复版...")
+                status = .launching
+                do {
+                    try await launchService.launchPatchedApp(settings: settingsDraft)
+                    markStep(.launch, as: .completed)
+                    status = .running
+                    appendLog("启动成功！")
+                } catch {
+                    markStep(.launch, as: .failed, detail: error.localizedDescription)
+                    status = .patchedReady
+                    appendLog("自动启动失败: \(error.localizedDescription) 可手动启动")
+                }
+            } else {
+                markStep(.launch, as: .completed, detail: "待手动启动")
+                status = .patchedReady
+                appendLog("修复完成，可手动启动修复版")
+            }
         } catch {
             markCurrentRunningStepFailed(with: error.localizedDescription)
             status = .error("修复失败: \(error.localizedDescription)")
@@ -641,6 +692,9 @@ final class LauncherAppState: ObservableObject {
         formatter.dateFormat = "HH:mm:ss"
         let timestamp = formatter.string(from: Date())
         logLines.append("[\(timestamp)] \(message)")
+        if logLines.count > 1000 {
+            logLines.removeFirst(logLines.count - 1000)
+        }
     }
 
     private static func resolveLauncherVersion() -> String {

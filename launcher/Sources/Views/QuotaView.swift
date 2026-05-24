@@ -7,7 +7,20 @@ struct QuotaView: View {
 
     @State private var showingLogoutConfirm = false
     @State private var selectedAccountPickerId: String = ""
-    @State private var pollingToggle = false
+
+    private var pollingBinding: Binding<Bool> {
+        Binding(
+            get: { quotaViewModel.isPolling },
+            set: { enabled in
+                if enabled {
+                    let interval = max(5, appState.settingsDraft.quotaPollingIntervalSeconds)
+                    quotaViewModel.startPolling(intervalSeconds: TimeInterval(interval))
+                } else {
+                    quotaViewModel.stopPolling()
+                }
+            }
+        )
+    }
 
     private var isQuotaTabActive: Bool {
         appState.selectedTab == .quota
@@ -140,7 +153,6 @@ struct QuotaView: View {
                 if !initialAccountId.isEmpty {
                     quotaViewModel.selectAccount(initialAccountId)
                 }
-                pollingToggle = quotaViewModel.isPolling
                 syncPollingWithSettingsDeferred()
                 updateQuotaDiagnosticsDeferred()
             }
@@ -170,25 +182,6 @@ struct QuotaView: View {
                 }
                 quotaViewModel.selectAccount(newId)
                 syncPollingWithSettingsDeferred()
-            }
-        }
-        .onChange(of: pollingToggle) { enabled in
-            guard isQuotaTabActive else { return }
-            DispatchQueue.main.async {
-                if enabled {
-                    let interval = max(5, appState.settingsDraft.quotaPollingIntervalSeconds)
-                    quotaViewModel.startPolling(intervalSeconds: TimeInterval(interval))
-                } else {
-                    quotaViewModel.stopPolling()
-                }
-            }
-        }
-        .onChange(of: quotaViewModel.isPolling) { isPolling in
-            guard isQuotaTabActive else { return }
-            DispatchQueue.main.async {
-                if pollingToggle != isPolling {
-                    pollingToggle = isPolling
-                }
             }
         }
         .onChange(of: appState.settingsDraft.quotaAutoRefreshEnabled) { enabled in
@@ -390,7 +383,7 @@ struct QuotaView: View {
 
                 Spacer()
 
-                Toggle(quotaViewModel.isPolling ? "停止自动刷新" : "开启自动刷新", isOn: $pollingToggle)
+                Toggle(quotaViewModel.isPolling ? "停止自动刷新" : "开启自动刷新", isOn: pollingBinding)
                 .toggleStyle(.button)
                 .disabled(authViewModel.accounts.isEmpty)
             }
@@ -524,7 +517,7 @@ struct QuotaView: View {
                 .frame(maxWidth: .infinity)
                 .padding(32)
             } else {
-                LazyVStack(spacing: 12) {
+                VStack(spacing: 12) {
                     ForEach(quotaViewModel.displayedModels) { model in
                         VStack(spacing: 16) {
                             ModelQuotaRow(model: model)

@@ -2,13 +2,16 @@ import Foundation
 
 struct MigrationService {
     func migrateSandboxData() throws {
-        guard FileSystemPaths.activeApp == .antigravity else {
+        switch FileSystemPaths.activeApp {
+        case .antigravity, .antigravityIDE:
+            break
+        case .gemini:
             return
         }
-        
+
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
-        let destination = home.appendingPathComponent("Library/Application Support/Antigravity")
+        let destination = home.appendingPathComponent("Library/Application Support/\(FileSystemPaths.activeApp.displayName)")
         let sources = findPossibleSandboxSources(baseHome: home)
 
         guard !sources.isEmpty else {
@@ -39,11 +42,22 @@ struct MigrationService {
         }
 
         var result: [URL] = []
+        let activeApp = FileSystemPaths.activeApp
         for container in containerFolders {
             let name = container.lastPathComponent.lowercased()
-            if name == "antigravity" || name.hasSuffix(".antigravity") {
+            let matches: Bool = {
+                switch activeApp {
+                case .antigravity:
+                    return name == "antigravity" || name.hasSuffix(".antigravity")
+                case .antigravityIDE:
+                    return name.contains("antigravity") && name.contains("ide")
+                case .gemini:
+                    return false
+                }
+            }()
+            if matches {
                 let appSupport = container
-                    .appendingPathComponent("Data/Library/Application Support/Antigravity", isDirectory: true)
+                    .appendingPathComponent("Data/Library/Application Support/\(activeApp.displayName)", isDirectory: true)
                 if fm.fileExists(atPath: appSupport.path) {
                     result.append(appSupport)
                 }
@@ -53,15 +67,34 @@ struct MigrationService {
     }
 
     private func resetTCCPermissions() {
-        let identities = [
-            "Antigravity",
-            "com.google.antigravity",
-            "com.apple.antigravity",
-            "Antigravity_Unlocked",
-            "Gemini",
-            "com.google.GeminiMacOS",
-            "Gemini_Unlocked"
-        ]
+        let identities: [String] = {
+            switch FileSystemPaths.activeApp {
+            case .antigravity:
+                return [
+                    "Antigravity",
+                    "com.google.antigravity",
+                    "com.apple.antigravity",
+                    "com.google.antigravity.helper",
+                    "com.google.antigravity.helper.GPU",
+                    "com.google.antigravity.helper.Plugin",
+                    "com.google.antigravity.helper.Renderer",
+                    "Antigravity_Unlocked"
+                ]
+            case .antigravityIDE:
+                return [
+                    "Antigravity IDE",
+                    "com.google.antigravity-ide",
+                    "com.google.antigravity-ide.helper",
+                    "Antigravity IDE_Unlocked"
+                ]
+            case .gemini:
+                return [
+                    "Gemini",
+                    "com.google.GeminiMacOS",
+                    "Gemini_Unlocked"
+                ]
+            }
+        }()
 
         for identity in identities {
             _ = try? CommandRunner.run("/usr/bin/tccutil", ["reset", "All", identity])

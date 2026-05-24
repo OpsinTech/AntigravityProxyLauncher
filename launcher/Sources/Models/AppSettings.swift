@@ -15,6 +15,7 @@ struct AppSettings: Codable, Equatable {
     var enableRuntimeLog: Bool
     var runtimeLogRefreshInterval: Int
     var runtimeLogLevel: String
+    var autoLaunchAfterPatch: Bool
 
     static let `default` = AppSettings(
         autoExportDiagnosticsOnFailure: true,
@@ -30,7 +31,8 @@ struct AppSettings: Codable, Equatable {
         releaseIgnoredVersion: "",
         enableRuntimeLog: false,
         runtimeLogRefreshInterval: 5,
-        runtimeLogLevel: "Info"
+        runtimeLogLevel: "Info",
+        autoLaunchAfterPatch: false
     )
 
     enum CodingKeys: String, CodingKey {
@@ -48,6 +50,7 @@ struct AppSettings: Codable, Equatable {
         case enableRuntimeLog
         case runtimeLogRefreshInterval
         case runtimeLogLevel
+        case autoLaunchAfterPatch
     }
 
     init(
@@ -64,7 +67,8 @@ struct AppSettings: Codable, Equatable {
         releaseIgnoredVersion: String,
         enableRuntimeLog: Bool,
         runtimeLogRefreshInterval: Int,
-        runtimeLogLevel: String
+        runtimeLogLevel: String,
+        autoLaunchAfterPatch: Bool
     ) {
         self.autoExportDiagnosticsOnFailure = autoExportDiagnosticsOnFailure
         self.quotaAutoRefreshEnabled = quotaAutoRefreshEnabled
@@ -80,6 +84,7 @@ struct AppSettings: Codable, Equatable {
         self.enableRuntimeLog = enableRuntimeLog
         self.runtimeLogRefreshInterval = runtimeLogRefreshInterval
         self.runtimeLogLevel = runtimeLogLevel
+        self.autoLaunchAfterPatch = autoLaunchAfterPatch
     }
 
     init(from decoder: Decoder) throws {
@@ -100,5 +105,6 @@ struct AppSettings: Codable, Equatable {
         enableRuntimeLog = try container.decodeIfPresent(Bool.self, forKey: .enableRuntimeLog) ?? false
         runtimeLogRefreshInterval = max(1, try container.decodeIfPresent(Int.self, forKey: .runtimeLogRefreshInterval) ?? 5)
         runtimeLogLevel = try container.decodeIfPresent(String.self, forKey: .runtimeLogLevel) ?? "Info"
+        autoLaunchAfterPatch = try container.decodeIfPresent(Bool.self, forKey: .autoLaunchAfterPatch) ?? false
     }
 }
