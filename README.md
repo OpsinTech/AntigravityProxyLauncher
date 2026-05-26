@@ -1,10 +1,10 @@
 # Antigravity Proxy Launcher (v2.0)
 
 欢迎来到 **Antigravity Proxy Launcher** v2.0 仓库。
-本项目通过动态库（dylib）注入与 macOS 环境重配机制，对目标应用进行代理增强与规则修补，并提供开箱即用的原生桌面级体验。
+本项目通过动态库（dylib）注入与 macOS 环境与 Windows 环境重配机制，对目标应用进行代理增强与规则修补，并提供开箱即用的原生桌面级体验。
 
 > **注意：**: Google 推出了桌面版本的gemini应用，依然无法通过普通的代理进行访问，本项目增加了gemini应用的代理支持。
-> 项目名称后续会更改为GoogleProxyLauncher。
+> 目前AntigravityProxyLauncher已支持macos和windows。macos支持应用antigravity，antigravity ide和gemini。windows支持应用antigravity和antigravity ide。 agv cli 在考虑中。后续先会把gemini应用的代理支持完善。
 
 ---
 

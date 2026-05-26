@@ -27,6 +27,7 @@ cd "$REPO_ROOT"
 # -O3: 最高级优化
 # -I ...: 头文件搜索路径
 clang++ -std=c++17 -dynamiclib -O3 \
+    -arch x86_64 -arch arm64 \
     -I AntigravityTun/AntigravityTun \
     AntigravityTun/AntigravityTun/AntigravityTun.cpp \
     -o "$TARGET_DYLIB"

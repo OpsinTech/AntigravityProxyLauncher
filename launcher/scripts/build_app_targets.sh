@@ -25,7 +25,7 @@ xcodebuild \
   -project AntigravityProxyLauncher.xcodeproj \
   -scheme AntigravityProxyLauncher \
   -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' \
+  -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA_PATH" \
   CODE_SIGNING_ALLOWED=NO \
   build >/dev/null
@@ -35,7 +35,7 @@ xcodebuild \
   -project AntigravityProxyLauncher.xcodeproj \
   -scheme AntigravityProxyLauncherCLI \
   -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' \
+  -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA_PATH" \
   CODE_SIGNING_ALLOWED=NO \
   build >/dev/null
