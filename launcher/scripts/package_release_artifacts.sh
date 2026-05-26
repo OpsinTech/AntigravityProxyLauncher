@@ -35,7 +35,7 @@ xcodebuild \
   -project AntigravityProxyLauncher.xcodeproj \
   -scheme AntigravityProxyLauncher \
   -configuration Release \
-  -destination 'platform=macOS,arch=arm64' \
+  -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA_PATH" \
   CODE_SIGNING_ALLOWED=NO \
   build >/dev/null
@@ -45,7 +45,7 @@ xcodebuild \
   -project AntigravityProxyLauncher.xcodeproj \
   -scheme AntigravityProxyLauncherCLI \
   -configuration Release \
-  -destination 'platform=macOS,arch=arm64' \
+  -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA_PATH" \
   CODE_SIGNING_ALLOWED=NO \
   build >/dev/null
@@ -66,8 +66,8 @@ fi
 cp -R "$APP_PATH" "$STAGING_DIR/$APP_BUNDLE_NAME"
 cp "$CLI_PATH" "$STAGING_DIR/$CLI_NAME"
 
-ZIP_PATH="$DIST_DIR/Antigravity-Proxy-Launcher-macos-arm64-$VERSION_TAG.zip"
-DMG_PATH="$DIST_DIR/Antigravity-Proxy-Launcher-macos-arm64-$VERSION_TAG.dmg"
+ZIP_PATH="$DIST_DIR/Antigravity-Proxy-Launcher-macos-$VERSION_TAG.zip"
+DMG_PATH="$DIST_DIR/Antigravity-Proxy-Launcher-macos-$VERSION_TAG.dmg"
 
 rm -f "$ZIP_PATH" "$DMG_PATH"
 
