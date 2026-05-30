@@ -13,7 +13,28 @@ struct RuntimeLogsView: View {
     private let maxReadBytes: Int = 20 * 1024
     
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
+            // 顶部的统一 4 字标题栏，与所有其他面板保持绝对的一致性
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: "text.alignleft")
+                        .font(.title2)
+                        .foregroundStyle(.blue)
+                    Text("运行日志")
+                        .font(.title2)
+                        .bold()
+                }
+                Text("查看底层拦截器的系统标准输出与错误数据流，实时轮询自检。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 32)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 16)
+            
+            Divider()
+
             if !appState.settingsDraft.enableRuntimeLog {
                 Spacer()
                 Text("如果需要查看运行日志，请在设置中开启「启用运行日志」功能。")

@@ -11,7 +11,7 @@ struct DiagnosticsView: View {
                         Image(systemName: "ladybug.fill")
                             .font(.title2)
                             .foregroundStyle(.pink)
-                        Text("核心机制诊断中心")
+                        Text("系统诊断")
                             .font(.title2)
                             .bold()
                     }

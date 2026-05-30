@@ -9,6 +9,10 @@ enum PatchedAppHealth {
 
 struct PatchedAppHealthService {
     func evaluate(targetVersion: String) -> PatchedAppHealth {
+        if FileSystemPaths.activeApp.targetType == .cliBinary {
+            return evaluateCLI(targetVersion: targetVersion)
+        }
+
         let fm = FileManager.default
         guard fm.fileExists(atPath: FileSystemPaths.patchedApp.path) else {
             return .missing
@@ -29,6 +33,36 @@ struct PatchedAppHealthService {
 
         guard fm.fileExists(atPath: dylib.path), fm.fileExists(atPath: config.path) else {
             return .repairRequired("修复包缺少关键资源，请重新修复。")
+        }
+
+        return .ready
+    }
+
+    private func evaluateCLI(targetVersion: String) -> PatchedAppHealth {
+        let fm = FileManager.default
+        let wrapper = FileSystemPaths.patchedCLIWrapper
+        let realBinary = FileSystemPaths.patchedCLIRealBinary
+        let dylib = FileSystemPaths.patchedCLIDylib
+        let config = FileSystemPaths.patchedCLIConfig
+
+        guard fm.fileExists(atPath: wrapper.path) else { return .missing }
+
+        guard let metadata = latestMetadata() else {
+            return .repairRequired("未找到 patch 元数据，请重新修复。")
+        }
+
+        if metadata.targetVersion != targetVersion {
+            return .outdated
+        }
+
+        guard fm.fileExists(atPath: realBinary.path),
+              fm.fileExists(atPath: dylib.path),
+              fm.fileExists(atPath: config.path) else {
+            return .repairRequired("修复目录缺少关键资源，请重新修复。")
+        }
+
+        guard fm.isExecutableFile(atPath: wrapper.path) else {
+            return .repairRequired("wrapper 脚本不可执行，请重新修复。")
         }
 
         return .ready

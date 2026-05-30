@@ -31,10 +31,16 @@ struct ProxyConfigService {
             return try load(from: FileSystemPaths.userProxyConfigFile)
         }
 
-        let patchedConfig = FileSystemPaths.patchedApp
-            .appendingPathComponent("Contents/Resources/proxy_config.json")
-        if FileManager.default.fileExists(atPath: patchedConfig.path) {
-            return try load(from: patchedConfig)
+        if FileSystemPaths.activeApp.targetType == .cliBinary {
+            if FileManager.default.fileExists(atPath: FileSystemPaths.patchedCLIConfig.path) {
+                return try load(from: FileSystemPaths.patchedCLIConfig)
+            }
+        } else {
+            let patchedConfig = FileSystemPaths.patchedApp
+                .appendingPathComponent("Contents/Resources/proxy_config.json")
+            if FileManager.default.fileExists(atPath: patchedConfig.path) {
+                return try load(from: patchedConfig)
+            }
         }
 
         if FileManager.default.fileExists(atPath: FileSystemPaths.bundledProxyConfigTemplate.path) {
@@ -58,8 +64,13 @@ struct ProxyConfigService {
         try data.write(to: FileSystemPaths.userProxyConfigFile)
 
         var synced = false
-        let patchedConfig = FileSystemPaths.patchedApp
-            .appendingPathComponent("Contents/Resources/proxy_config.json")
+        let patchedConfig: URL
+        if FileSystemPaths.activeApp.targetType == .cliBinary {
+            patchedConfig = FileSystemPaths.patchedCLIConfig
+        } else {
+            patchedConfig = FileSystemPaths.patchedApp
+                .appendingPathComponent("Contents/Resources/proxy_config.json")
+        }
         if FileManager.default.fileExists(atPath: patchedConfig.path) {
             try data.write(to: patchedConfig)
             synced = true

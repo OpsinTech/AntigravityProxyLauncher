@@ -2,6 +2,17 @@ import Foundation
 import AppKit
 import Darwin
 
+enum LaunchError: LocalizedError {
+    case cliSmokeTestFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .cliSmokeTestFailed(let output):
+            return "CLI 验证失败: \(output)"
+        }
+    }
+}
+
 final class LaunchService {
     private var activeAppPID: pid_t?
     var onAppTerminated: (() -> Void)?
@@ -29,7 +40,12 @@ final class LaunchService {
         }
     }
 
-    func launchPatchedApp(settings: AppSettings? = nil) async throws {
+    func launchPatchedApp(settings: AppSettings? = nil) async throws -> String? {
+        // CLI targets: run a smoke test, return version output
+        if FileSystemPaths.activeApp.targetType == .cliBinary {
+            return try await launchCLISmokeTest(settings: settings)
+        }
+
         // 停止已有实例必须在后台线程，避免阻塞主线程（内部有轮询等待）
         stopManagedPatchedApp()
 
@@ -75,6 +91,7 @@ final class LaunchService {
             configuration: config
         )
         self.activeAppPID = app.processIdentifier
+        return nil
     }
 
     /// 清理应用的隔离属性，避免每次启动都需要输入密码
@@ -110,6 +127,11 @@ final class LaunchService {
     }
 
     func stopManagedPatchedApp() {
+        if FileSystemPaths.activeApp.targetType == .cliBinary {
+            stopCLIProcesses()
+            return
+        }
+
         let allRunning = allRunningPatchedProcesses()
         guard !allRunning.isEmpty else {
             activeAppPID = nil
@@ -169,7 +191,10 @@ final class LaunchService {
     }
 
     func isPatchedAppRunning() -> Bool {
-        !allRunningPatchedProcesses().isEmpty
+        if FileSystemPaths.activeApp.targetType == .cliBinary {
+            return isCLIProcessRunning()
+        }
+        return !allRunningPatchedProcesses().isEmpty
     }
 
     /// 当用户切换目标 app 时，清除上一个 app 的运行状态
@@ -255,5 +280,91 @@ final class LaunchService {
         process.arguments = ["-e", script]
         try? process.run()
         process.waitUntilExit()
+    }
+
+    // MARK: - CLI process management
+
+    private func launchCLISmokeTest(settings: AppSettings? = nil) async throws -> String {
+        stopCLIProcesses()
+
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = FileSystemPaths.patchedCLIWrapper
+                process.arguments = FileSystemPaths.activeApp.cliVersionArgs
+
+                var env = ProcessInfo.processInfo.environment
+                env.removeValue(forKey: "DYLD_INSERT_LIBRARIES")
+                env.removeValue(forKey: "ANTIGRAVITY_CONFIG")
+                if let settings, settings.enableRuntimeLog {
+                    env["ANTIGRAVITY_LOG_FILE"] = "1"
+                    env["ANTIGRAVITY_LOG_LEVEL"] = settings.runtimeLogLevel
+                    env["ANTIGRAVITY_LOG_PATH"] = FileSystemPaths.runtimeLogFile.path
+                }
+                process.environment = env
+
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = pipe
+
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    let output = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    if process.terminationStatus == 0 {
+                        continuation.resume(returning: output)
+                    } else {
+                        continuation.resume(throwing: LaunchError.cliSmokeTestFailed(output))
+                    }
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func stopCLIProcesses() {
+        let processNames = ["agy-real", "agy"]
+        for name in processNames {
+            do {
+                let result = try CommandRunner.run("/usr/bin/pgrep", ["-f", name])
+                let pids = result.stdout
+                    .split(separator: "\n")
+                    .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
+                for pid in pids {
+                    if pid == getpid() { continue }
+                    kill(pid, SIGTERM)
+                }
+            } catch {
+                // pgrep returns non-zero when no matches — expected
+            }
+        }
+        // Brief wait then force kill
+        Thread.sleep(forTimeInterval: 0.5)
+        for name in processNames {
+            do {
+                let result = try CommandRunner.run("/usr/bin/pgrep", ["-f", name])
+                let pids = result.stdout
+                    .split(separator: "\n")
+                    .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
+                for pid in pids {
+                    if pid == getpid() { continue }
+                    kill(pid, SIGKILL)
+                }
+            } catch { }
+        }
+        activeAppPID = nil
+    }
+
+    private func isCLIProcessRunning() -> Bool {
+        do {
+            let result = try CommandRunner.run("/usr/bin/pgrep", ["-f", "agy-real"])
+            return !result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } catch {
+            return false
+        }
     }
 }

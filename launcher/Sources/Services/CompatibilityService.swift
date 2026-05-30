@@ -146,8 +146,15 @@ struct CompatibilityService {
     }
 
     func matchedRule(for app: AppInfo, registry: CompatibilityRegistry) -> CompatibilityRule? {
-        registry.rules.first { rule in
-            rule.bundleIdentifier == app.bundleIdentifier
+        let identifier: String
+        if FileSystemPaths.activeApp.targetType == .cliBinary {
+            identifier = FileSystemPaths.activeApp.rawValue
+        } else {
+            identifier = app.bundleIdentifier
+        }
+
+        return registry.rules.first { rule in
+            rule.bundleIdentifier == identifier
                 && compareVersion(app.version, rule.minVersion) >= 0
                 && compareVersion(app.version, rule.maxVersion) <= 0
         }
