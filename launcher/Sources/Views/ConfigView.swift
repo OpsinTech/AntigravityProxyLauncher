@@ -24,7 +24,7 @@ struct ConfigView: View {
                         Image(systemName: "slider.horizontal.3")
                             .font(.title2)
                             .foregroundStyle(.blue)
-                        Text("网络与代理配置")
+                        Text("代理配置")
                             .font(.title2)
                             .bold()
                     }

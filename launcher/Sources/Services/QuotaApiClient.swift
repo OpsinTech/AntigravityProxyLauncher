@@ -56,11 +56,11 @@ struct QuotaApiClient {
         self.apiTimeoutSeconds = apiTimeoutSeconds
     }
 
-    func loadProjectInfo(accessToken: String) async throws -> ProjectInfo {
+    func loadProjectInfo(accessToken: String, ideType: String) async throws -> ProjectInfo {
         let response = try await makeApiRequest(
             path: "/v1internal:loadCodeAssist",
             accessToken: accessToken,
-            body: ["metadata": ["ideType": "ANTIGRAVITY"]]
+            body: ["metadata": ["ideType": ideType]]
         )
 
         let projectId = response["cloudaicompanionProject"] as? String ?? ""
@@ -95,7 +95,11 @@ struct QuotaApiClient {
                 continue
             }
 
-            let fraction = quotaInfo["remainingFraction"] as? Double ?? 0
+            // If remainingFraction is absent, skip the model rather than
+            // defaulting to 0 (which would falsely show it as exhausted).
+            guard let fraction = quotaInfo["remainingFraction"] as? Double else {
+                continue
+            }
             let resetRaw = quotaInfo["resetTime"] as? String ?? ""
             let resetTime = parseResetTime(resetRaw)
 

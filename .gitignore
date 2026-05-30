@@ -1,15 +1,14 @@
 # Generated app bundle
 Antigravity_Unlocked.app/
 
-# Log files
+# Log files and documentation
 *.log
 /tmp/antigravity_proxy*.log
 GITHUB_RELEASE.md
-
-# IDE
-.vscode/
-*.xcuserdatad/
-*.xcworkspace/
+*.log   
+build_output/
+docs/
+logs/
 
 # macOS
 .DS_Store
@@ -32,8 +31,16 @@ launcher/.build/
 dist/
 
 # Logs files
-*.log
+
+
+# codeagent
+.antigravitycli/
 .trae/
-.claude/   
-build_output/
-docs/
+.claude/
+*.xcuserdatad/
+*.xcworkspace/
+.vscode/
+
+
+# AntigravityTun
+AntigravityTun/

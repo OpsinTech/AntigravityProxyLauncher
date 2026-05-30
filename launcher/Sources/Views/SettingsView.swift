@@ -195,16 +195,16 @@ struct SettingsView: View {
                         }
 
                         HStack {
-                            Text("更新信息 URL")
+                            Text("更新来源")
                                 .frame(width: 100, alignment: .leading)
-                            TextField("预留: release.json 的下发接口", text: $appState.settingsDraft.releaseFeedURL)
+                            TextField("GitHub 仓库地址，如 OpsinTech/AntigravityProxyLauncher", text: $appState.settingsDraft.releaseFeedURL)
                                 .textFieldStyle(.roundedBorder)
                         }
 
                         HStack {
-                            Text("授信根通讯端")
+                            Text("授信域名")
                                 .frame(width: 100, alignment: .leading)
-                            TextField("逗号分隔，如 raw.githubusercontent.com", text: $appState.settingsDraft.releaseFeedTrustedHosts)
+                            TextField("仅自建 feed 时需要，逗号分隔", text: $appState.settingsDraft.releaseFeedTrustedHosts)
                                 .textFieldStyle(.roundedBorder)
                         }
 
@@ -215,7 +215,7 @@ struct SettingsView: View {
                             .buttonStyle(.borderedProminent)
                             .tint(.purple)
 
-                            if let info = appState.releaseUpdateInfo, info.isUpdateAvailable {
+                            if let info = appState.releaseUpdateInfo, info.isUpdateAvailable, !appState.isReleaseVersionIgnored(info.latestVersion) {
                                 Text("发现新版本: \(info.latestVersion)")
                                     .font(.caption)
                                     .foregroundStyle(.orange)

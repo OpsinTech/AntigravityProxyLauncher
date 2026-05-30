@@ -18,6 +18,7 @@ final class LauncherAppState: ObservableObject {
         LaunchWorkflowItem(id: $0, state: .pending, detail: nil)
     }
     @Published var logLines: [String] = []
+    private var allAppLogs: [TargetApp: [String]] = [:]
     @Published var isRunningWorkflow = false
     @Published var lastExportPath: String?
     @Published var lastExportError: String?
@@ -45,6 +46,11 @@ final class LauncherAppState: ObservableObject {
             UserDefaults.standard.set(selectedApp.rawValue, forKey: "SelectedTargetApp")
             FileSystemPaths.activeApp = selectedApp
             launchService.resetForTargetChange()
+            
+            // 缓存旧应用的实时日志，并加载新应用的实时日志，实现应用级日志完全隔离
+            allAppLogs[oldValue] = logLines
+            logLines = allAppLogs[selectedApp] ?? []
+            
             appendLog("---------- 切换到 \(selectedApp.displayName) ----------")
             refresh()
         }
@@ -141,22 +147,31 @@ final class LauncherAppState: ObservableObject {
         guard !isRunningWorkflow else { return }
         isRunningWorkflow = true
 
-        appendLog("直接启动已修复的应用...")
+        let isCLI = selectedApp.targetType == .cliBinary
+        appendLog(isCLI ? "验证 CLI 安装..." : "直接启动已修复的应用...")
         status = .launching
 
         Task {
             do {
-                try await launchService.launchPatchedApp(settings: settingsDraft)
+                let cliOutput = try await launchService.launchPatchedApp(settings: settingsDraft)
                 await MainActor.run {
-                    self.appendLog("启动成功！")
-                    self.status = .running
+                    if isCLI {
+                        if let output = cliOutput, !output.isEmpty {
+                            self.appendLog("agy 版本: \(output)")
+                        }
+                        self.appendLog("验证通过：Agy CLI 代理注入已就绪，可在终端使用 agy 命令。")
+                        self.status = .patchedReady
+                    } else {
+                        self.appendLog("启动成功！")
+                        self.status = .running
+                    }
                     self.isRunningWorkflow = false
                 }
             } catch {
                 await MainActor.run {
-                    self.appendLog("启动失败: \(error.localizedDescription)")
+                    self.appendLog("\(isCLI ? "验证" : "启动")失败: \(error.localizedDescription)")
                     LauncherLogger.error("Direct launch failed: \(error)")
-                    self.status = .error("启动失败: \(error.localizedDescription)")
+                    self.status = .error("\(isCLI ? "验证" : "启动")失败: \(error.localizedDescription)")
                     self.isRunningWorkflow = false
                 }
             }
@@ -198,6 +213,7 @@ final class LauncherAppState: ObservableObject {
 
     func clearLogs() {
         logLines.removeAll()
+        allAppLogs[selectedApp] = [] // 同步清空当前应用的日志缓存
 
         let fm = FileManager.default
         var clearedTargets: [String] = []
@@ -240,18 +256,40 @@ final class LauncherAppState: ObservableObject {
             do {
                 try await runBlocking {
                     let fm = FileManager.default
-                    
+
                     let report: (String) -> Void = { msg in
                         Task { @MainActor in self.appendLog(msg) }
                     }
-                    
-                    if fm.fileExists(atPath: FileSystemPaths.patchedApp.path) {
-                        try fm.removeItem(at: FileSystemPaths.patchedApp)
-                        report("已移除破解 App: \(FileSystemPaths.patchedApp.path)")
+
+                    if FileSystemPaths.activeApp.targetType == .cliBinary {
+                        // CLI cleanup: remove patched directory and restore original symlink
+                        let cliDir = FileSystemPaths.patchedCLIDir
+                        if fm.fileExists(atPath: cliDir.path) {
+                            try fm.removeItem(at: cliDir)
+                            report("已移除 CLI 修复目录: \(cliDir.path)")
+                        } else {
+                            report("未发现 CLI 修复目录，跳过清理")
+                        }
+
+                        // Restore original binary from backup if it exists
+                        let targetPath = FileSystemPaths.targetApp
+                        let backupPath = targetPath.path + ".original"
+                        if fm.fileExists(atPath: backupPath) {
+                            if fm.fileExists(atPath: targetPath.path) || (try? targetPath.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+                                try fm.removeItem(at: targetPath)
+                            }
+                            try fm.copyItem(at: URL(fileURLWithPath: backupPath), to: targetPath)
+                            report("已还原原始 agy 二进制: \(backupPath)")
+                        }
                     } else {
-                        report("未发现破解 App，跳过清理")
+                        if fm.fileExists(atPath: FileSystemPaths.patchedApp.path) {
+                            try fm.removeItem(at: FileSystemPaths.patchedApp)
+                            report("已移除破解 App: \(FileSystemPaths.patchedApp.path)")
+                        } else {
+                            report("未发现破解 App，跳过清理")
+                        }
                     }
-                    
+
                     let metaURL = FileSystemPaths.appSupportRoot.appendingPathComponent("patch_metadata.json")
                     if fm.fileExists(atPath: metaURL.path) {
                         try fm.removeItem(at: metaURL)
@@ -368,6 +406,10 @@ final class LauncherAppState: ObservableObject {
                 loadedSettings.googleOAuthClientSecret = OAuthConstants.bundledDefaultClientSecret
             }
 
+            if loadedSettings.releaseFeedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                loadedSettings.releaseFeedURL = AppSettings.default.releaseFeedURL
+            }
+
             settingsDraft = loadedSettings
             settingsErrorMessage = nil
             checkLauncherUpdates(manual: false)
@@ -421,13 +463,23 @@ final class LauncherAppState: ObservableObject {
         releaseUpdateErrorMessage = nil
         lastReleaseCheckAt = Date()
 
+        // Detect GitHub repo URL: supports "owner/repo", "github.com/owner/repo", "https://github.com/owner/repo"
+        let githubRepo = parseGitHubRepo(from: feedURL)
+
         Task {
             do {
-                let result = try await releaseUpdateService.check(
-                    currentVersion: launcherVersionText,
-                    urlString: feedURL,
-                    trustedHostPatterns: trustedHosts
-                )
+                let result: ReleaseUpdateInfo
+                if let (owner, repo) = githubRepo {
+                    result = try await releaseUpdateService.checkGitHubRepo(
+                        owner: owner, repo: repo, currentVersion: launcherVersionText
+                    )
+                } else {
+                    result = try await releaseUpdateService.check(
+                        currentVersion: launcherVersionText,
+                        urlString: feedURL,
+                        trustedHostPatterns: trustedHosts
+                    )
+                }
                 releaseUpdateInfo = result
 
                 if result.isUpdateAvailable {
@@ -603,7 +655,7 @@ final class LauncherAppState: ObservableObject {
                 appendLog("自动启动修复版...")
                 status = .launching
                 do {
-                    try await launchService.launchPatchedApp(settings: settingsDraft)
+                    let _ = try await launchService.launchPatchedApp(settings: settingsDraft)
                     markStep(.launch, as: .completed)
                     status = .running
                     appendLog("启动成功！")
@@ -695,18 +747,55 @@ final class LauncherAppState: ObservableObject {
         if logLines.count > 1000 {
             logLines.removeFirst(logLines.count - 1000)
         }
+        allAppLogs[selectedApp] = logLines // 同步将日志缓存更新到当前应用
+    }
+
+    /// Parse a GitHub repo URL into (owner, repo). Supports formats:
+    /// - "owner/repo"
+    /// - "github.com/owner/repo"
+    /// - "https://github.com/owner/repo"
+    private func parseGitHubRepo(from urlString: String) -> (String, String)? {
+        var cleaned = urlString.trimmingCharacters(in: .whitespaces)
+        // Strip protocol
+        if let range = cleaned.range(of: "https://") {
+            cleaned = String(cleaned[range.upperBound...])
+        } else if let range = cleaned.range(of: "http://") {
+            cleaned = String(cleaned[range.upperBound...])
+        }
+        // Strip host if present
+        if cleaned.hasPrefix("github.com/") {
+            cleaned = String(cleaned.dropFirst("github.com/".count))
+        }
+        // Strip trailing slash
+        if cleaned.hasSuffix("/") {
+            cleaned = String(cleaned.dropLast())
+        }
+        let parts = cleaned.split(separator: "/")
+        guard parts.count == 2 else { return nil }
+        return (String(parts[0]), String(parts[1]))
     }
 
     private static func resolveLauncherVersion() -> String {
-        if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
-           !version.isEmpty {
-            return version
+        // Try bundled version.txt first (release builds)
+        if let url = Bundle.main.url(forResource: "version", withExtension: "txt"),
+           let content = try? String(contentsOf: url, encoding: .utf8) {
+            let version = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !version.isEmpty { return version }
         }
 
-        if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
-           !build.isEmpty {
-            return build
+        // Try Resources/version.txt relative to launcher root (DEBUG / dev builds)
+        let resourcesVersionURL = FileSystemPaths.launcherRoot
+            .appendingPathComponent("Resources/version.txt")
+        if let content = try? String(contentsOf: resourcesVersionURL, encoding: .utf8) {
+            let version = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !version.isEmpty { return version }
         }
+
+        if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+           !version.isEmpty { return version }
+
+        if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+           !build.isEmpty { return build }
 
         return "0.1.0-dev"
     }

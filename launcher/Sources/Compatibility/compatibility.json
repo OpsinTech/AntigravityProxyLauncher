@@ -18,6 +18,12 @@
       "maxVersion": "99.99.99",
       "bundleIdentifier": "com.google.GeminiMacOS",
       "executableRelativePath": "Contents/MacOS/Gemini"
+    },
+    {
+      "minVersion": "0.1.0",
+      "maxVersion": "99.99.99",
+      "bundleIdentifier": "agy",
+      "executableRelativePath": ""
     }
   ]
 }

@@ -17,29 +17,29 @@ final class QuotaPollingService {
         self.cacheService = cacheService
     }
 
-    func refreshActiveAccountQuota() async throws -> (String, QuotaSnapshot) {
+    func refreshActiveAccountQuota(ideType: String = "ANTIGRAVITY") async throws -> (String, QuotaSnapshot) {
         guard let activeAccount = try authService.getActiveAccount() else {
             throw GoogleOAuthError.noActiveAccount
         }
 
-        return try await refreshQuota(for: activeAccount)
+        return try await refreshQuota(for: activeAccount, ideType: ideType)
     }
 
-    func refreshQuota(forAccountId accountId: String) async throws -> (String, QuotaSnapshot) {
+    func refreshQuota(forAccountId accountId: String, ideType: String = "ANTIGRAVITY") async throws -> (String, QuotaSnapshot) {
         let accounts = try authService.getAccounts()
         guard let account = accounts.first(where: { $0.id == accountId }) else {
             throw GoogleOAuthError.noActiveAccount
         }
 
-        return try await refreshQuota(for: account)
+        return try await refreshQuota(for: account, ideType: ideType)
     }
 
-    func refreshAllAccountsQuota() async throws -> [String: QuotaSnapshot] {
+    func refreshAllAccountsQuota(ideType: String = "ANTIGRAVITY") async throws -> [String: QuotaSnapshot] {
         let accounts = try authService.getAccounts()
         var snapshots: [String: QuotaSnapshot] = [:]
 
         for account in accounts {
-            let (accountId, snapshot) = try await refreshQuota(for: account)
+            let (accountId, snapshot) = try await refreshQuota(for: account, ideType: ideType)
             snapshots[accountId] = snapshot
         }
 
@@ -50,7 +50,7 @@ final class QuotaPollingService {
         try cacheService.loadAllSnapshots()
     }
 
-    private func refreshQuota(for account: GoogleAccount) async throws -> (String, QuotaSnapshot) {
+    private func refreshQuota(for account: GoogleAccount, ideType: String) async throws -> (String, QuotaSnapshot) {
 
         let maxRetries = 3
         var retryCount = 0
@@ -58,7 +58,7 @@ final class QuotaPollingService {
         while true {
             do {
                 let accessToken = try await authService.getValidAccessToken(accountId: account.id, allowUserInteraction: false)
-                let project = try await apiClient.loadProjectInfo(accessToken: accessToken)
+                let project = try await apiClient.loadProjectInfo(accessToken: accessToken, ideType: ideType)
                 let models = try await apiClient.fetchModelsQuota(
                     accessToken: accessToken,
                     projectId: project.projectId
@@ -97,13 +97,13 @@ final class QuotaPollingService {
         return try cacheService.loadSnapshot(for: accountId)
     }
 
-    func startPolling(intervalSeconds: TimeInterval, onUpdate: @escaping @MainActor ([String: QuotaSnapshot]) -> Void, onError: @escaping @MainActor (String) -> Void) {
+    func startPolling(intervalSeconds: TimeInterval, ideType: String = "ANTIGRAVITY", onUpdate: @escaping @MainActor ([String: QuotaSnapshot]) -> Void, onError: @escaping @MainActor (String) -> Void) {
         stopPolling()
 
         pollingTask = Task {
             while !Task.isCancelled {
                 do {
-                    let snapshots = try await refreshAllAccountsQuota()
+                    let snapshots = try await refreshAllAccountsQuota(ideType: ideType)
                     await onUpdate(snapshots)
                 } catch {
                     // 在自动刷新模式下，如果遇到需要用户交互的错误，不触发弹窗

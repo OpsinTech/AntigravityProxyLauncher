@@ -147,4 +147,23 @@ struct SigningService {
             ["--force", "--options", "runtime", "--sign", "-", "--entitlements", entitlementsPath, path]
         )
     }
+
+    /// Re-sign a single standalone Mach-O binary (not an .app bundle).
+    func signSingleBinary(at binaryURL: URL, entitlementsURL: URL) throws {
+        try preflight()
+
+        // Remove existing signature (ignore failure if binary has none)
+        _ = try? CommandRunner.run("/usr/bin/codesign", ["--remove-signature", binaryURL.path])
+
+        _ = try CommandRunner.run(
+            "/usr/bin/codesign",
+            [
+                "--force",
+                "--options", "runtime",
+                "--sign", "-",
+                "--entitlements", entitlementsURL.path,
+                binaryURL.path
+            ]
+        )
+    }
 }

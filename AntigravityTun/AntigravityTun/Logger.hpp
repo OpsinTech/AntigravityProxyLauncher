@@ -127,13 +127,15 @@ public:
     const char *levelStr = LevelToString(level);
     int pid = getpid();
 
-    // 输出到 stderr
-    fprintf(stderr, "[%s] [%d] %s %s\n", buf, pid, levelStr, msg.c_str());
-    
+    // 输出到 stderr（仅当文件日志未启用时，避免污染宿主应用输出）
+    if (!s_fileLoggingEnabled) {
+      fprintf(stderr, "[%s] [%d] %s %s\n", buf, pid, levelStr, msg.c_str());
+    }
+
     // 文件日志（如果启用）- 减少锁持有时间，先格式化字符串
     if (s_fileLoggingEnabled && s_file != nullptr) {
       char line[512];
-      int len = snprintf(line, sizeof(line), "[%s] [%d] %s %s\n", 
+      int len = snprintf(line, sizeof(line), "[%s] [%d] %s %s\n",
                          buf, pid, levelStr, msg.c_str());
       if (len > 0 && len < (int)sizeof(line)) {
         std::lock_guard<std::mutex> lock(s_mtx);

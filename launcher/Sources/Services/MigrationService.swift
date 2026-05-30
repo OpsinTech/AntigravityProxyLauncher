@@ -5,7 +5,7 @@ struct MigrationService {
         switch FileSystemPaths.activeApp {
         case .antigravity, .antigravityIDE:
             break
-        case .gemini:
+        case .gemini, .agy:
             return
         }
 
@@ -51,7 +51,7 @@ struct MigrationService {
                     return name == "antigravity" || name.hasSuffix(".antigravity")
                 case .antigravityIDE:
                     return name.contains("antigravity") && name.contains("ide")
-                case .gemini:
+                case .gemini, .agy:
                     return false
                 }
             }()
@@ -93,6 +93,8 @@ struct MigrationService {
                     "com.google.GeminiMacOS",
                     "Gemini_Unlocked"
                 ]
+            case .agy:
+                return []
             }
         }()
 
