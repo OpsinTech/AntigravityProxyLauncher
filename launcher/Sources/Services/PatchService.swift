@@ -43,6 +43,11 @@ final class PatchService {
             throw PatchServiceError.targetAppMissing
         }
 
+        if FileSystemPaths.activeApp.targetType == .cliBinary {
+            try preparePatchedCLI(onProgress: onProgress)
+            return
+        }
+
         PatchLogWriter.beginSession()
 
         let fm = FileManager.default
@@ -97,6 +102,152 @@ final class PatchService {
             }
             throw error
         }
+    }
+
+    // MARK: - CLI patching
+
+    private func preparePatchedCLI(onProgress: ((String) -> Void)? = nil) throws {
+        PatchLogWriter.beginSession()
+
+        let fm = FileManager.default
+        let cliDir = FileSystemPaths.patchedCLIDir
+        let realBinary = FileSystemPaths.patchedCLIRealBinary
+        let wrapper = FileSystemPaths.patchedCLIWrapper
+        let dylibDest = FileSystemPaths.patchedCLIDylib
+        let configDest = FileSystemPaths.patchedCLIConfig
+        let entitlementsDest = FileSystemPaths.patchedCLIEntitlements
+        let userSymlink = FileSystemPaths.targetApp
+
+        // Resolve the real source binary, regardless of symlink state.
+        // The user-facing path may already be a symlink from a previous patch.
+        let resolvedSource: URL = {
+            let isSymlink = (try? userSymlink.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) ?? false
+            if isSymlink {
+                let target = userSymlink.resolvingSymlinksInPath()
+                // If it points to our own wrapper, look for a backup or the real binary
+                if target.path == wrapper.path {
+                    let backup = URL(fileURLWithPath: userSymlink.path + ".original")
+                    if fm.fileExists(atPath: backup.path) && fm.isExecutableFile(atPath: backup.path) {
+                        return backup
+                    }
+                }
+                // Follow the symlink to the actual file
+                if fm.fileExists(atPath: target.path) && fm.isExecutableFile(atPath: target.path) {
+                    return target
+                }
+            }
+            return userSymlink
+        }()
+
+        guard fm.isExecutableFile(atPath: resolvedSource.path) else {
+            throw PatchServiceError.runtimeAssetMissing("agy 原始二进制不可执行: \(resolvedSource.path)")
+        }
+
+        // Capture version now — before we change the symlink and dylib injection kicks in
+        let capturedVersion = detectInstalledTargetApp()?.version ?? "unknown"
+
+        // 1. Create directory
+        report("创建 CLI 修复目录: \(cliDir.path)", onProgress: onProgress)
+        try fm.createDirectory(at: cliDir, withIntermediateDirectories: true)
+
+        // 2. Copy original binary (from resolved real source, not symlink)
+        report("复制 agy 二进制到 \(realBinary.path)", onProgress: onProgress)
+        if fm.fileExists(atPath: realBinary.path) {
+            let isExistingSymlink = (try? realBinary.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) ?? false
+            let isExistingRealBinary = !isExistingSymlink
+            // If the existing agy-real is a real binary (not symlink/wrapper), reuse it
+            if isExistingRealBinary && fm.isExecutableFile(atPath: realBinary.path) {
+                report("agy-real 已存在，跳过复制", onProgress: onProgress)
+            } else {
+                try fm.removeItem(at: realBinary)
+            }
+        }
+        if !fm.fileExists(atPath: realBinary.path) {
+            try fm.copyItem(at: resolvedSource, to: realBinary)
+        }
+
+        // 3. Copy dylib
+        let dylibSource = try resolveDylibSource()
+        report("复制 dylib: \(dylibSource.path)", onProgress: onProgress)
+        try copyFileReplacingExisting(from: dylibSource, to: dylibDest)
+
+        // 4. Copy entitlements
+        let entitlementsSource = try resolveEntitlementsSource()
+        report("复制 entitlements.plist", onProgress: onProgress)
+        try copyFileReplacingExisting(from: entitlementsSource, to: entitlementsDest)
+
+        // 5. Ensure proxy config exists in user config dir
+        let configSource = try resolveProxyConfigSource()
+        report("确保代理配置文件存在: \(configSource.path)", onProgress: onProgress)
+        try copyFileReplacingExisting(from: configSource, to: configDest)
+
+        // 6. Re-sign the real binary
+        report("重签名 agy-real", onProgress: onProgress)
+        try signingService.signSingleBinary(at: realBinary, entitlementsURL: entitlementsDest)
+
+        // 7. Create wrapper script
+        report("生成 wrapper 脚本: \(wrapper.path)", onProgress: onProgress)
+        if fm.fileExists(atPath: wrapper.path) {
+            try fm.removeItem(at: wrapper)
+        }
+        let wrapperContent = """
+        #!/bin/bash
+        # Resolve the real path of this script (follow symlinks) so the sibling
+        # binary is found regardless of how the wrapper is invoked.
+        SCRIPT_PATH="$0"
+        while [ -L "$SCRIPT_PATH" ]; do
+            TARGET="$(readlink "$SCRIPT_PATH")"
+            case "$TARGET" in
+                /*) SCRIPT_PATH="$TARGET" ;;
+                *)  SCRIPT_PATH="$(dirname "$SCRIPT_PATH")/$TARGET" ;;
+            esac
+        done
+        SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+        export DYLD_INSERT_LIBRARIES="$SCRIPT_DIR/libAntigravityTun.dylib"
+        export ANTIGRAVITY_CONFIG="$HOME/.config/antigravity/proxy_config.json"
+        # Redirect dylib logs to file to keep stderr clean for agy output
+        export ANTIGRAVITY_LOG_FILE=1
+        export ANTIGRAVITY_LOG_PATH="/tmp/antigravity_proxy.$$.log"
+        exec "$SCRIPT_DIR/agy-real" "$@"
+        """
+        try wrapperContent.write(to: wrapper, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapper.path)
+
+        // 8. Update user-facing symlink — always preserve the real binary as .original
+        report("更新符号链接: \(userSymlink.path) -> \(wrapper.path)", onProgress: onProgress)
+        let backupPath = userSymlink.path + ".original"
+        let isSymlink = (try? userSymlink.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) ?? false
+
+        // Ensure a .original backup of the real binary exists
+        if !fm.fileExists(atPath: backupPath) {
+            if isSymlink {
+                // Resolve symlink to find the real binary and back that up
+                let resolved = userSymlink.resolvingSymlinksInPath()
+                if resolved.path != wrapper.path,
+                   fm.fileExists(atPath: resolved.path),
+                   fm.isExecutableFile(atPath: resolved.path) {
+                    try fm.copyItem(at: resolved, to: URL(fileURLWithPath: backupPath))
+                    report("已备份原始二进制 (从 symlink 解析): \(backupPath)", onProgress: onProgress)
+                } else if fm.isExecutableFile(atPath: resolvedSource.path)
+                            && resolvedSource.path != wrapper.path {
+                    try fm.copyItem(at: resolvedSource, to: URL(fileURLWithPath: backupPath))
+                    report("已备份原始二进制 (从 resolvedSource): \(backupPath)", onProgress: onProgress)
+                }
+            } else if fm.isExecutableFile(atPath: userSymlink.path) {
+                try fm.copyItem(at: userSymlink, to: URL(fileURLWithPath: backupPath))
+                report("已备份原始二进制: \(backupPath)", onProgress: onProgress)
+            }
+        }
+
+        // Remove existing symlink or file
+        if fm.fileExists(atPath: userSymlink.path) || isSymlink {
+            try fm.removeItem(at: userSymlink)
+        }
+        try fm.createSymbolicLink(at: userSymlink, withDestinationURL: wrapper)
+
+        // 9. Persist metadata (use version captured before patching)
+        report("写入 patch 元数据", onProgress: onProgress)
+        try persistPatchMetadata(targetVersion: capturedVersion)
     }
 
     private func rollbackPatchedBundleIfNeeded() throws {
@@ -276,13 +427,18 @@ final class PatchService {
             .map { $0.appendingPathComponent("Contents/Resources", isDirectory: true) }
     }
 
-    func persistPatchMetadata() throws {
+    func persistPatchMetadata(targetVersion: String? = nil) throws {
         try FileManager.default.createDirectory(
             at: FileSystemPaths.metadataRoot,
             withIntermediateDirectories: true
         )
 
-        let appVersion = detectInstalledTargetApp()?.version ?? "unknown"
+        let appVersion: String
+        if let targetVersion, !targetVersion.isEmpty {
+            appVersion = targetVersion
+        } else {
+            appVersion = detectInstalledTargetApp()?.version ?? "unknown"
+        }
         let metadata = PatchMetadata(
             launcherVersion: "0.1.0",
             targetVersion: appVersion,

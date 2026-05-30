@@ -24,9 +24,17 @@ struct LauncherDoctor {
         }
 
         print("状态: 检测到原版 App")
-        print("Bundle ID: \(app.bundleIdentifier)")
+        if app.bundleIdentifier.isEmpty {
+            print("Bundle ID: N/A (CLI binary)")
+        } else {
+            print("Bundle ID: \(app.bundleIdentifier)")
+        }
         print("Version: \(app.version)")
-        print("Executable: \(app.executableRelativePath)")
+        if app.executableRelativePath.isEmpty {
+            print("Executable: (CLI binary, no bundle)")
+        } else {
+            print("Executable: \(app.executableRelativePath)")
+        }
         print("Architectures: \(app.architectures.joined(separator: ", "))")
 
         do {
@@ -120,7 +128,7 @@ struct LauncherDoctor {
             try verifier.verifyPatchedResult()
 
             print("[4/4] 启动修复版")
-            try runAsyncBlocking {
+            let _ = try runAsyncBlocking {
                 let settings = try? settingsService.load()
                 try await launch.launchPatchedApp(settings: settings)
             }

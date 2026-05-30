@@ -184,14 +184,10 @@ struct QuotaView: View {
                 syncPollingWithSettingsDeferred()
             }
         }
-        .onChange(of: appState.settingsDraft.quotaAutoRefreshEnabled) { enabled in
-            guard isQuotaTabActive else { return }
-            _ = enabled
+        .onChange(of: appState.settingsDraft.quotaAutoRefreshEnabled) { _ in
             syncPollingWithSettingsDeferred()
         }
-        .onChange(of: appState.settingsDraft.quotaPollingIntervalSeconds) { seconds in
-            guard isQuotaTabActive else { return }
-            _ = seconds
+        .onChange(of: appState.settingsDraft.quotaPollingIntervalSeconds) { _ in
             syncPollingWithSettingsDeferred()
         }
         .onChange(of: quotaViewModel.uiStatus) { _ in
@@ -240,12 +236,12 @@ struct QuotaView: View {
                 Image(systemName: "chart.pie.fill")
                     .font(.title2)
                     .foregroundStyle(.purple)
-                Text("配额与账户管理")
+                Text("配额管理")
                     .font(.title2)
                     .bold()
             }
 
-            Text("查看多账户配额状态，支持后台静默轮询更新与一键免密调度。")
+            Text("查看 Antigravity 配额服务状态，支持多账户后台静默轮询更新与一键调度。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 32)
@@ -579,29 +575,26 @@ private struct ModelQuotaRow: View {
                     }
                 }
 
-                HStack(spacing: 8) {
-                    Text(model.modelId)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Text("重置于 \(formattedResetTime)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("重置于 \(formattedResetTime)  剩余 \(formattedRemainingTime)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            VStack(alignment: .trailing, spacing: 2) {
+            VStack(alignment: .trailing, spacing: 5) {
                 Text("\(Int(model.remainingPercentage))%")
                     .font(.title3)
                     .fontWeight(.semibold)
                     .foregroundStyle(model.isExhausted ? .red : percentageColor)
 
-                ProgressView(value: model.remainingPercentage, total: 100)
-                    .progressViewStyle(.linear)
-                    .frame(width: 80)
-                    .tint(progressColor)
+                SegmentedQuotaIndicator(
+                    percentage: model.remainingPercentage,
+                    isExhausted: model.isExhausted,
+                    blockWidth: 12,
+                    blockHeight: 7,
+                    spacing: 2
+                )
             }
         }
         .padding(.vertical, 4)
@@ -612,21 +605,20 @@ private struct ModelQuotaRow: View {
             return "待接口返回"
         }
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter.string(from: reset)
     }
 
-    private var percentageColor: Color {
-        if model.remainingPercentage < 20 {
-            return .red
-        } else if model.remainingPercentage < 50 {
-            return .orange
-        } else {
-            return .green
-        }
+    private var formattedRemainingTime: String {
+        guard let reset = model.resetTime else { return "--:--:--" }
+        let remaining = max(0, reset.timeIntervalSinceNow)
+        let h = Int(remaining) / 3600
+        let m = (Int(remaining) % 3600) / 60
+        let s = Int(remaining) % 60
+        return String(format: "%02d:%02d:%02d", h, m, s)
     }
 
-    private var progressColor: Color {
+    private var percentageColor: Color {
         if model.remainingPercentage < 20 {
             return .red
         } else if model.remainingPercentage < 50 {

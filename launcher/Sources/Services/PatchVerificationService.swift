@@ -14,6 +14,7 @@ enum PatchVerificationError: LocalizedError {
     case dylibMissing(String)
     case configMissing(String)
     case invalidLSEnvironment
+    case invalidCLIWrapper(String)
     case codeSignVerifyFailed(CodeSignVerifyFailureDetail)
 
     var errorDescription: String? {
@@ -30,6 +31,8 @@ enum PatchVerificationError: LocalizedError {
             return "验证失败: 配置文件不存在 -> \(path)"
         case .invalidLSEnvironment:
             return "验证失败: LSEnvironment 缺失或内容不正确"
+        case .invalidCLIWrapper(let path):
+            return "验证失败: CLI wrapper 脚本无效 -> \(path)"
         case .codeSignVerifyFailed(let detail):
             let stdout = detail.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             let stderr = detail.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -40,6 +43,11 @@ enum PatchVerificationError: LocalizedError {
 
 struct PatchVerificationService {
     func verifyPatchedResult() throws {
+        if FileSystemPaths.activeApp.targetType == .cliBinary {
+            try verifyPatchedCLI()
+            return
+        }
+
         let appURL = FileSystemPaths.patchedApp
         let infoURL = appURL.appendingPathComponent("Contents/Info.plist")
 
@@ -113,6 +121,71 @@ struct PatchVerificationService {
         let args = ["--verify", "--deep", "--strict", "--verbose=4", appURL.path]
         let commandText = "/usr/bin/codesign " + args.joined(separator: " ")
 
+        do {
+            _ = try CommandRunner.run("/usr/bin/codesign", args)
+        } catch let commandError as CommandRunnerError {
+            switch commandError {
+            case .nonZeroExit(let result):
+                throw PatchVerificationError.codeSignVerifyFailed(
+                    .init(
+                        command: commandText,
+                        exitCode: result.status,
+                        stdout: result.stdout,
+                        stderr: result.stderr
+                    )
+                )
+            case .executableNotFound:
+                throw PatchVerificationError.codeSignVerifyFailed(
+                    .init(
+                        command: commandText,
+                        exitCode: -1,
+                        stdout: "",
+                        stderr: commandError.localizedDescription
+                    )
+                )
+            }
+        } catch {
+            throw PatchVerificationError.codeSignVerifyFailed(
+                .init(
+                    command: commandText,
+                    exitCode: -1,
+                    stdout: "",
+                    stderr: error.localizedDescription
+                )
+            )
+        }
+    }
+
+    private func verifyPatchedCLI() throws {
+        let wrapper = FileSystemPaths.patchedCLIWrapper
+        let realBinary = FileSystemPaths.patchedCLIRealBinary
+        let dylib = FileSystemPaths.patchedCLIDylib
+        let config = FileSystemPaths.patchedCLIConfig
+        let fm = FileManager.default
+
+        guard fm.fileExists(atPath: wrapper.path) else {
+            throw PatchVerificationError.patchedAppMissing(wrapper.path)
+        }
+        guard fm.fileExists(atPath: realBinary.path) else {
+            throw PatchVerificationError.executableMissing(realBinary.path)
+        }
+        guard fm.fileExists(atPath: dylib.path) else {
+            throw PatchVerificationError.dylibMissing(dylib.path)
+        }
+        guard fm.fileExists(atPath: config.path) else {
+            throw PatchVerificationError.configMissing(config.path)
+        }
+
+        // Verify wrapper script contains required env vars
+        guard let content = try? String(contentsOf: wrapper, encoding: .utf8),
+              content.contains("DYLD_INSERT_LIBRARIES"),
+              content.contains("ANTIGRAVITY_CONFIG") else {
+            throw PatchVerificationError.invalidCLIWrapper(wrapper.path)
+        }
+
+        // Verify code signature on the real binary
+        let args = ["--verify", "--strict", "--verbose=4", realBinary.path]
+        let commandText = "/usr/bin/codesign " + args.joined(separator: " ")
         do {
             _ = try CommandRunner.run("/usr/bin/codesign", args)
         } catch let commandError as CommandRunnerError {

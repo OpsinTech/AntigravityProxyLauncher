@@ -79,7 +79,7 @@ final class QuotaViewModel: ObservableObject {
             .min()
         guard let reset = nearestReset else { return nil }
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter.string(from: reset)
     }
 
@@ -124,7 +124,7 @@ final class QuotaViewModel: ObservableObject {
         updateUIStatus()
     }
 
-    func refreshCurrentAccount() {
+    func refreshCurrentAccount(ideType: String = "ANTIGRAVITY") {
         guard let accountId = selectedAccountId else {
             errorMessage = "未选择账户"
             uiStatus = .refreshFailed("未选择账户")
@@ -136,7 +136,7 @@ final class QuotaViewModel: ObservableObject {
 
         Task {
             do {
-                let (id, freshSnapshot) = try await pollingService.refreshQuota(forAccountId: accountId)
+                let (id, freshSnapshot) = try await pollingService.refreshQuota(forAccountId: accountId, ideType: ideType)
                 snapshotsByAccount[id] = freshSnapshot
                 snapshot = freshSnapshot
                 uiStatus = .refreshSuccess
@@ -164,13 +164,13 @@ final class QuotaViewModel: ObservableObject {
         }
     }
 
-    func refreshAllAccounts() {
+    func refreshAllAccounts(ideType: String = "ANTIGRAVITY") {
         uiStatus = .refreshing
         errorMessage = nil
 
         Task {
             do {
-                let latest = try await pollingService.refreshAllAccountsQuota()
+                let latest = try await pollingService.refreshAllAccountsQuota(ideType: ideType)
                 snapshotsByAccount = latest
                 if selectedAccountId == nil {
                     selectedAccountId = latest.keys.sorted().first
@@ -200,14 +200,14 @@ final class QuotaViewModel: ObservableObject {
         }
     }
 
-    func startPolling(intervalSeconds: TimeInterval? = nil, defaultInterval: TimeInterval = 60) {
+    func startPolling(intervalSeconds: TimeInterval? = nil, defaultInterval: TimeInterval = 60, ideType: String = "ANTIGRAVITY") {
         guard !isPolling else { return }
 
         isPolling = true
         let interval = max(5, intervalSeconds ?? defaultInterval)
         pollingIntervalSeconds = interval
 
-        pollingService.startPolling(intervalSeconds: interval, onUpdate: { [weak self] latest in
+        pollingService.startPolling(intervalSeconds: interval, ideType: ideType, onUpdate: { [weak self] latest in
             guard let self else { return }
             self.snapshotsByAccount = latest
             if self.selectedAccountId == nil {
@@ -261,22 +261,54 @@ final class QuotaViewModel: ObservableObject {
             return "-"
         }
 
+        let elapsed = Date().timeIntervalSince(snapshot.timestamp)
+        let relative: String
+        switch elapsed {
+        case ..<0:
+            relative = "刚刚"
+        case ..<60:
+            relative = "\(Int(elapsed))秒前"
+        case ..<3600:
+            relative = "\(Int(elapsed / 60))分钟前"
+        case ..<86400:
+            relative = "\(Int(elapsed / 3600))小时前"
+        default:
+            relative = "\(Int(elapsed / 86400))天前"
+        }
+
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.string(from: snapshot.timestamp)
+        let absolute = formatter.string(from: snapshot.timestamp)
+        return "\(relative) (\(absolute))"
+    }
+
+    /// Whether the quota data may be stale (> 5 minutes since last refresh).
+    var isStale: Bool {
+        guard let snapshot else { return false }
+        return Date().timeIntervalSince(snapshot.timestamp) > 300
     }
 
     var nextAutoRefreshTime: String? {
         guard isPolling,
-              let snapshot,
               let pollingIntervalSeconds else {
             return nil
         }
 
-        let next = snapshot.timestamp.addingTimeInterval(max(5, pollingIntervalSeconds))
+        // Base next refresh on now + interval, since the polling loop
+        // sleeps for the full interval after completing all account refreshes.
+        let next = Date().addingTimeInterval(max(5, pollingIntervalSeconds))
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter.string(from: next)
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let absolute = formatter.string(from: next)
+
+        let secondsUntil = next.timeIntervalSinceNow
+        if secondsUntil < 60 {
+            return "\(absolute) (即将刷新)"
+        } else if secondsUntil < 3600 {
+            return "\(absolute) (约\(Int(secondsUntil / 60))分钟后)"
+        } else {
+            return absolute
+        }
     }
 
     var diagnosticsSummary: [String: String] {
@@ -320,7 +352,11 @@ final class QuotaViewModel: ObservableObject {
         }
 
         if isPolling {
-            uiStatus = .refreshSuccess
+            if isStale {
+                uiStatus = .refreshSuccess // still polling, but data may be from last cycle
+            } else {
+                uiStatus = .refreshSuccess
+            }
         } else if snapshot != nil {
             uiStatus = .hasCachedNotRefreshed
         } else {

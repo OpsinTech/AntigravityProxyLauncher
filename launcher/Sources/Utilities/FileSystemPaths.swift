@@ -61,11 +61,19 @@ enum FileSystemPaths {
     static var activeApp: TargetApp = .antigravity
 
     static var targetApp: URL {
-        URL(fileURLWithPath: activeApp.defaultPath)
+        let path = activeApp.defaultPath
+        if path.hasPrefix("~/") {
+            return FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(String(path.dropFirst(2)))
+        }
+        return URL(fileURLWithPath: path)
     }
 
     static var patchedApp: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        if activeApp.targetType == .cliBinary {
+            return patchedCLIWrapper
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Applications/\(activeApp.patchedName)", isDirectory: true)
     }
 
@@ -100,6 +108,9 @@ enum FileSystemPaths {
                 .appendingPathComponent("Library/Application Support/Antigravity IDE", isDirectory: true)
         case .gemini:
             return appSupportRoot.appendingPathComponent("Config", isDirectory: true)
+        case .agy:
+            return FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/antigravity", isDirectory: true)
         }
     }
 
@@ -121,8 +132,35 @@ enum FileSystemPaths {
         runtimeLogsRoot.appendingPathComponent("antigravity_proxy.log")
     }
 
+    // MARK: - CLI-specific paths
+
+    static var patchedCLIDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(activeApp.cliPatchedDirRelativePath, isDirectory: true)
+    }
+
+    static var patchedCLIRealBinary: URL {
+        patchedCLIDir.appendingPathComponent(activeApp.cliRealBinaryName)
+    }
+
+    static var patchedCLIWrapper: URL {
+        patchedCLIDir.appendingPathComponent(activeApp.patchedName)
+    }
+
+    static var patchedCLIDylib: URL {
+        patchedCLIDir.appendingPathComponent("libAntigravityTun.dylib")
+    }
+
+    static var patchedCLIConfig: URL {
+        patchedCLIDir.appendingPathComponent("proxy_config.json")
+    }
+
+    static var patchedCLIEntitlements: URL {
+        patchedCLIDir.appendingPathComponent("entitlements.plist")
+    }
+
     static var requiredRuntimeDirectories: [URL] {
-        [
+        var dirs: [URL] = [
             appSupportRoot,
             metadataRoot,
             userConfigRoot,
@@ -130,6 +168,10 @@ enum FileSystemPaths {
             patchLogFile.deletingLastPathComponent(),
             runtimeLogsRoot
         ]
+        if activeApp.targetType == .cliBinary {
+            dirs.append(patchedCLIDir)
+        }
+        return dirs
     }
 
     static func ensureRuntimeDirectoriesExist() throws {
