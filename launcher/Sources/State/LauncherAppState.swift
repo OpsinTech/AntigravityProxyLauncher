@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 enum LauncherTab: Hashable {
     case overview
@@ -7,6 +8,20 @@ enum LauncherTab: Hashable {
     case diagnostics
     case runtimeLogs
     case settings
+}
+
+struct MenuBarAppStatus {
+    let app: TargetApp
+    let isInstalled: Bool
+    let isRunning: Bool
+    let isPatched: Bool
+
+    var statusText: String {
+        if isRunning { return "运行中" }
+        if isPatched { return "已就绪" }
+        if isInstalled { return "已安装" }
+        return "未安装"
+    }
 }
 
 @MainActor
@@ -39,7 +54,9 @@ final class LauncherAppState: ObservableObject {
     @Published var releaseUpdateInfo: ReleaseUpdateInfo?
     @Published var releaseUpdateStatusMessage: String?
     @Published var releaseUpdateErrorMessage: String?
-    
+
+    @Published var allAppStatuses: [TargetApp: MenuBarAppStatus] = [:]
+
     @Published var selectedApp: TargetApp = .antigravity {
         didSet {
             guard oldValue != selectedApp else { return }
@@ -91,6 +108,7 @@ final class LauncherAppState: ObservableObject {
         loadProxyConfig()
         loadSettings()
         reloadDiagnosticsHistory()
+        refreshAllAppStatuses()
 
         guard let app = appDetectionService.detectInstalledTargetApp() else {
             appInfo = nil
@@ -132,6 +150,24 @@ final class LauncherAppState: ObservableObject {
             compatibilitySourceText = "加载失败"
             status = .error("兼容性配置加载失败: \(error.localizedDescription)")
         }
+    }
+
+    func launchSpecificApp(_ app: TargetApp) {
+        selectedApp = app
+        refresh()
+        launchPatchedAppOnly()
+    }
+
+    func patchSpecificApp(_ app: TargetApp) {
+        selectedApp = app
+        refresh()
+        patchOnly()
+    }
+
+    func stopSpecificApp(_ app: TargetApp) {
+        selectedApp = app
+        stopPatchedAppOnly()
+        refreshAllAppStatuses()
     }
 
     func patchOnly() {
@@ -412,6 +448,7 @@ final class LauncherAppState: ObservableObject {
 
             settingsDraft = loadedSettings
             settingsErrorMessage = nil
+            applyDockIconSetting()
             checkLauncherUpdates(manual: false)
         } catch {
             settingsErrorMessage = "加载设置失败: \(error.localizedDescription)"
@@ -427,6 +464,7 @@ final class LauncherAppState: ObservableObject {
             settingsDraft.googleOAuthClientSecret = settingsDraft.googleOAuthClientSecret
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             try settingsService.save(settingsDraft)
+            applyDockIconSetting()
             settingsStatusMessage = "设置已保存"
             settingsErrorMessage = nil
             appendLog("设置已保存: \(FileSystemPaths.settingsFile.path)")
@@ -438,8 +476,8 @@ final class LauncherAppState: ObservableObject {
         }
     }
 
-    func checkLauncherUpdates(manual: Bool) {
-        if !manual,
+    func checkLauncherUpdates(manual: Bool, forceRefresh: Bool = false) {
+        if !forceRefresh, !manual,
            let lastReleaseCheckAt,
            Date().timeIntervalSince(lastReleaseCheckAt) < 600 {
             return
@@ -471,7 +509,9 @@ final class LauncherAppState: ObservableObject {
                 let result: ReleaseUpdateInfo
                 if let (owner, repo) = githubRepo {
                     result = try await releaseUpdateService.checkGitHubRepo(
-                        owner: owner, repo: repo, currentVersion: launcherVersionText
+                        owner: owner, repo: repo, currentVersion: launcherVersionText,
+                        githubToken: settingsDraft.githubToken,
+                        forceRefresh: forceRefresh
                     )
                 } else {
                     result = try await releaseUpdateService.check(
@@ -588,10 +628,44 @@ final class LauncherAppState: ObservableObject {
         }
     }
 
+    func applyDockIconSetting() {
+        if settingsDraft.hideDockIcon {
+            NSApplication.shared.setActivationPolicy(.accessory)
+        } else {
+            NSApplication.shared.setActivationPolicy(.regular)
+        }
+    }
+
     func reloadDiagnosticsHistory() {
         let history = diagnosticsService.loadHistory(limit: 40)
         diagnosticsHistory = history
         failureAggregates = diagnosticsService.aggregateFailures(from: history, top: 6)
+    }
+
+    func refreshAllAppStatuses() {
+        var statuses: [TargetApp: MenuBarAppStatus] = [:]
+        for app in TargetApp.allCases {
+            let previous = FileSystemPaths.activeApp
+            FileSystemPaths.activeApp = app
+            defer { FileSystemPaths.activeApp = previous }
+
+            let isInstalled = appDetectionService.detectInstalledTargetApp() != nil
+            let patchedExists: Bool = {
+                if app.targetType == .cliBinary {
+                    return FileManager.default.fileExists(atPath: FileSystemPaths.patchedCLIWrapper.path)
+                }
+                return FileManager.default.fileExists(atPath: FileSystemPaths.patchedApp.path)
+            }()
+            let isRunning = launchService.isPatchedAppRunning()
+
+            statuses[app] = MenuBarAppStatus(
+                app: app,
+                isInstalled: isInstalled,
+                isRunning: isRunning,
+                isPatched: patchedExists
+            )
+        }
+        allAppStatuses = statuses
     }
 
     private func runWorkflow() async {

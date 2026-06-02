@@ -16,6 +16,8 @@ struct AppSettings: Codable, Equatable {
     var runtimeLogRefreshInterval: Int
     var runtimeLogLevel: String
     var autoLaunchAfterPatch: Bool
+    var hideDockIcon: Bool
+    var githubToken: String
 
     static let `default` = AppSettings(
         autoExportDiagnosticsOnFailure: true,
@@ -32,7 +34,9 @@ struct AppSettings: Codable, Equatable {
         enableRuntimeLog: false,
         runtimeLogRefreshInterval: 5,
         runtimeLogLevel: "Info",
-        autoLaunchAfterPatch: false
+        autoLaunchAfterPatch: false,
+        hideDockIcon: false,
+        githubToken: ""
     )
 
     enum CodingKeys: String, CodingKey {
@@ -51,6 +55,8 @@ struct AppSettings: Codable, Equatable {
         case runtimeLogRefreshInterval
         case runtimeLogLevel
         case autoLaunchAfterPatch
+        case hideDockIcon
+        case githubToken
     }
 
     init(
@@ -68,7 +74,9 @@ struct AppSettings: Codable, Equatable {
         enableRuntimeLog: Bool,
         runtimeLogRefreshInterval: Int,
         runtimeLogLevel: String,
-        autoLaunchAfterPatch: Bool
+        autoLaunchAfterPatch: Bool,
+        hideDockIcon: Bool,
+        githubToken: String
     ) {
         self.autoExportDiagnosticsOnFailure = autoExportDiagnosticsOnFailure
         self.quotaAutoRefreshEnabled = quotaAutoRefreshEnabled
@@ -85,6 +93,8 @@ struct AppSettings: Codable, Equatable {
         self.runtimeLogRefreshInterval = runtimeLogRefreshInterval
         self.runtimeLogLevel = runtimeLogLevel
         self.autoLaunchAfterPatch = autoLaunchAfterPatch
+        self.hideDockIcon = hideDockIcon
+        self.githubToken = githubToken
     }
 
     init(from decoder: Decoder) throws {
@@ -106,5 +116,7 @@ struct AppSettings: Codable, Equatable {
         runtimeLogRefreshInterval = max(1, try container.decodeIfPresent(Int.self, forKey: .runtimeLogRefreshInterval) ?? 5)
         runtimeLogLevel = try container.decodeIfPresent(String.self, forKey: .runtimeLogLevel) ?? "Info"
         autoLaunchAfterPatch = try container.decodeIfPresent(Bool.self, forKey: .autoLaunchAfterPatch) ?? false
+        hideDockIcon = try container.decodeIfPresent(Bool.self, forKey: .hideDockIcon) ?? false
+        githubToken = try container.decodeIfPresent(String.self, forKey: .githubToken) ?? ""
     }
 }

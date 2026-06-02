@@ -68,8 +68,8 @@ cp "$DYLIB_SRC" "$UNIVERSAL_APP/Contents/Resources/libAntigravityTun.dylib"
 
 # --- Step 5: Package ---
 echo "[5/5] Creating DMG and ZIP..."
-DMG_NAME="${APP_NAME}_${VERSION}_x86_64_arm64.dmg"
-ZIP_NAME="${APP_NAME}_${VERSION}_x86_64_arm64.zip"
+DMG_NAME="${APP_NAME}_${VERSION}-macos_x86_64_arm64.dmg"
+ZIP_NAME="${APP_NAME}_${VERSION}-macos_x86_64_arm64.zip"
 
 # Remove old packages
 rm -f "$OUTPUT_DIR/$DMG_NAME" "$OUTPUT_DIR/$ZIP_NAME"
