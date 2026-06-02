@@ -47,7 +47,13 @@ struct AntigravityProxyLauncherApp: App {
                 LauncherLogger.info("GUI bootstrap with bundle identifier: \(bundleIdentifier)")
             }
 
-            NSApplication.shared.setActivationPolicy(.regular)
+            let hideDock = AntigravityProxyLauncherApp.loadHideDockIconSetting()
+            if hideDock {
+                NSApplication.shared.setActivationPolicy(.accessory)
+                LauncherLogger.info("Dock icon hidden (setting from file)")
+            } else {
+                NSApplication.shared.setActivationPolicy(.regular)
+            }
             NSApplication.shared.activate(ignoringOtherApps: true)
             break
         }
@@ -77,26 +83,56 @@ struct AntigravityProxyLauncherApp: App {
     @ViewBuilder
     private var menuBarContent: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(appState.status.title)
-                .font(.headline)
-            Text(appState.selectedApp.displayName)
+            ForEach(TargetApp.allCases) { app in
+                let status = appState.allAppStatuses[app] ?? MenuBarAppStatus(app: app, isInstalled: false, isRunning: false, isPatched: false)
 
-            Divider()
-
-            if appState.status == .running {
-                Button("关闭 \(appState.selectedApp.displayName)") {
-                    appState.stopPatchedAppOnly()
-                }
-            } else {
-                Button("启动 \(appState.selectedApp.displayName)") {
-                    appState.launchPatchedAppOnly()
-                }
-                .disabled(appState.status == .patching || appState.status == .launching)
-            }
-
-            if appState.status != .patching && appState.status != .launching {
-                Button("修复 \(appState.selectedApp.displayName)") {
-                    appState.patchOnly()
+                if status.isPatched || status.isInstalled || status.isRunning {
+                    Menu {
+                        if status.isRunning {
+                            Button {
+                                appState.stopSpecificApp(app)
+                            } label: {
+                                Label("关闭", systemImage: "stop.circle")
+                            }
+                        }
+                        if status.isPatched && !status.isRunning {
+                            Button {
+                                appState.launchSpecificApp(app)
+                            } label: {
+                                Label("启动", systemImage: "play.circle")
+                            }
+                        }
+                        if status.isInstalled {
+                            Button {
+                                appState.patchSpecificApp(app)
+                            } label: {
+                                Label("修复", systemImage: "wrench")
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Image(systemName: app.iconName)
+                                .frame(width: 18)
+                            Text(app.displayName)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text(status.statusText)
+                                .font(.caption)
+                                .foregroundStyle(colorForStatus(status))
+                        }
+                    }
+                } else {
+                    HStack {
+                        Image(systemName: app.iconName)
+                            .frame(width: 18)
+                            .foregroundStyle(.gray)
+                        Text(app.displayName)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(status.statusText)
+                            .font(.caption)
+                            .foregroundStyle(.gray)
+                    }
                 }
             }
 
@@ -117,22 +153,56 @@ struct AntigravityProxyLauncherApp: App {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(minWidth: 180)
+        .frame(minWidth: 240)
+    }
+
+    private func colorForStatus(_ status: MenuBarAppStatus) -> Color {
+        if status.isRunning { return .green }
+        if status.isPatched { return .yellow }
+        if status.isInstalled { return .secondary }
+        return .gray
     }
 
     private var menuBarIcon: some View {
-        let color: Color = {
-            switch appState.status {
-            case .running: return .green
-            case .patching, .launching, .cleaning: return .blue
-            case .patchedReady: return .yellow
-            case .error, .targetAppMissing, .targetAppUnsupportedVersion, .repairRequired: return .red
-            case .targetAppInstalled, .patchedAppMissing, .patchedAppOutdated: return .orange
-            }
-        }()
+        let icon = menuBarResizedIcon()
+        return Image(nsImage: icon)
+    }
 
-        return Circle()
-            .fill(color)
-            .frame(width: 10, height: 10)
+    private func menuBarResizedIcon() -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+        if let appIcon = NSApp.applicationIconImage,
+           let rep = NSBitmapImageRep(
+               bitmapDataPlanes: nil,
+               pixelsWide: Int(size.width),
+               pixelsHigh: Int(size.height),
+               bitsPerSample: 8,
+               samplesPerPixel: 4,
+               hasAlpha: true,
+               isPlanar: false,
+               colorSpaceName: .deviceRGB,
+               bytesPerRow: 0,
+               bitsPerPixel: 32
+           ) {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            appIcon.draw(in: NSRect(origin: .zero, size: size),
+                         from: .zero,
+                         operation: .copy,
+                         fraction: 1.0)
+            NSGraphicsContext.restoreGraphicsState()
+            let resized = NSImage(size: size)
+            resized.addRepresentation(rep)
+            return resized
+        }
+        return NSImage(systemSymbolName: "shippingbox.fill", accessibilityDescription: nil) ?? NSImage()
+    }
+
+    private static func loadHideDockIconSetting() -> Bool {
+        let fileURL = FileSystemPaths.settingsFile
+        guard let data = try? Data(contentsOf: fileURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return (json["hideDockIcon"] as? Bool) ?? false
     }
 }

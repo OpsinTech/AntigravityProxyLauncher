@@ -4,6 +4,7 @@ enum ReleaseUpdateError: Error {
     case invalidURL
     case untrustedSource(String)
     case fetchFailed(String)
+    case rateLimited
     case decodeFailed
 }
 
@@ -16,13 +17,54 @@ extension ReleaseUpdateError: LocalizedError {
             return "更新源不在授信域名内: \(host)"
         case .fetchFailed(let reason):
             return "检查更新失败: \(reason)"
+        case .rateLimited:
+            return "GitHub API 请求频率超限，请稍后再试或在设置中配置 GitHub Token"
         case .decodeFailed:
             return "更新信息解析失败"
         }
     }
 }
 
+struct CachedReleaseInfo: Codable {
+    let info: ReleaseUpdateInfoCodable
+    let cachedAt: Date
+    let etag: String?
+}
+
+struct ReleaseUpdateInfoCodable: Codable {
+    let currentVersion: String
+    let latestVersion: String
+    let notes: String?
+    let downloadURL: String?
+    let isUpdateAvailable: Bool
+}
+
+extension ReleaseUpdateInfo {
+    func toCodable() -> ReleaseUpdateInfoCodable {
+        ReleaseUpdateInfoCodable(
+            currentVersion: currentVersion,
+            latestVersion: latestVersion,
+            notes: notes,
+            downloadURL: downloadURL,
+            isUpdateAvailable: isUpdateAvailable
+        )
+    }
+
+    static func fromCodable(_ codable: ReleaseUpdateInfoCodable) -> ReleaseUpdateInfo {
+        ReleaseUpdateInfo(
+            currentVersion: codable.currentVersion,
+            latestVersion: codable.latestVersion,
+            notes: codable.notes,
+            downloadURL: codable.downloadURL,
+            isUpdateAvailable: codable.isUpdateAvailable
+        )
+    }
+}
+
 struct ReleaseUpdateService {
+    private static let cacheKey = "ReleaseUpdateCache"
+    private static let cacheValidityDuration: TimeInterval = 24 * 60 * 60 // 24 hours
+
     func check(
         currentVersion: String,
         urlString: String,
@@ -70,8 +112,27 @@ struct ReleaseUpdateService {
     ///   - owner: GitHub repo owner (e.g. "KevinLiangX")
     ///   - repo: GitHub repo name (e.g. "AntigravityProxyLauncher")
     ///   - currentVersion: the running app version (without "v" prefix)
-    func checkGitHubRepo(owner: String, repo: String, currentVersion: String) async throws -> ReleaseUpdateInfo {
-        let apiURL = "https://api.github.com/repos/\(owner)/\(repo)/releases/latest"
+    ///   - githubToken: optional GitHub Personal Access Token for higher rate limits
+    ///   - forceRefresh: bypass cache and fetch fresh data
+    func checkGitHubRepo(owner: String, repo: String, currentVersion: String,
+                         platform: String = "macos",
+                         githubToken: String? = nil,
+                         forceRefresh: Bool = false) async throws -> ReleaseUpdateInfo {
+        // Check cache first (unless force refresh)
+        if !forceRefresh, let cached = loadCachedInfo(owner: owner, repo: repo, platform: platform) {
+            // Update currentVersion in cached result
+            let available = compareVersion(cached.info.latestVersion, currentVersion) > 0
+            return ReleaseUpdateInfo(
+                currentVersion: currentVersion,
+                latestVersion: cached.info.latestVersion,
+                notes: cached.info.notes,
+                downloadURL: cached.info.downloadURL,
+                isUpdateAvailable: available
+            )
+        }
+
+        // Fetch recent releases and pick the first one whose tag contains the platform suffix
+        let apiURL = "https://api.github.com/repos/\(owner)/\(repo)/releases?per_page=30"
         guard let url = URL(string: apiURL) else {
             throw ReleaseUpdateError.invalidURL
         }
@@ -80,33 +141,133 @@ struct ReleaseUpdateService {
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("AntigravityProxyLauncher/\(currentVersion)", forHTTPHeaderField: "User-Agent")
 
+        // Add GitHub Token if available
+        let token = (githubToken ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        // Add ETag for conditional request
+        if let cached = loadCachedInfo(owner: owner, repo: repo, platform: platform),
+           let etag = cached.etag {
+            request.setValue(etag, forHTTPHeaderField: "If-None-Match")
+        }
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+
+        guard let http = response as? HTTPURLResponse else {
+            throw ReleaseUpdateError.fetchFailed("无效的响应")
+        }
+
+        // Handle 304 Not Modified (conditional request)
+        if http.statusCode == 304 {
+            if let cached = loadCachedInfo(owner: owner, repo: repo, platform: platform) {
+                let available = compareVersion(cached.info.latestVersion, currentVersion) > 0
+                return ReleaseUpdateInfo(
+                    currentVersion: currentVersion,
+                    latestVersion: cached.info.latestVersion,
+                    notes: cached.info.notes,
+                    downloadURL: cached.info.downloadURL,
+                    isUpdateAvailable: available
+                )
+            }
+        }
+
+        // Handle rate limiting (403 or 429)
+        if http.statusCode == 403 || http.statusCode == 429 {
+            // Check if we have cached data to fall back on
+            if let cached = loadCachedInfo(owner: owner, repo: repo, platform: platform) {
+                let available = compareVersion(cached.info.latestVersion, currentVersion) > 0
+                return ReleaseUpdateInfo(
+                    currentVersion: currentVersion,
+                    latestVersion: cached.info.latestVersion,
+                    notes: cached.info.notes,
+                    downloadURL: cached.info.downloadURL,
+                    isUpdateAvailable: available
+                )
+            }
+            throw ReleaseUpdateError.rateLimited
+        }
+
+        if !(200...299).contains(http.statusCode) {
             throw ReleaseUpdateError.fetchFailed("GitHub API HTTP \(http.statusCode)")
         }
 
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let releases = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw ReleaseUpdateError.decodeFailed
         }
 
-        // GitHub returns tag_name like "v2.0.1" — strip leading "v" for comparison
-        let rawTag = json["tag_name"] as? String ?? ""
-        let latestVersion = rawTag.hasPrefix("v") ? String(rawTag.dropFirst()) : rawTag
-        guard !latestVersion.isEmpty else {
+        // Find the first (most recent) release matching the platform suffix, e.g. "v2.3.0-macos"
+        let suffix = "-\(platform)"
+        guard let match = releases.first(where: { ($0["tag_name"] as? String ?? "").hasSuffix(suffix) }),
+              let rawTag = match["tag_name"] as? String else {
             throw ReleaseUpdateError.decodeFailed
         }
 
-        let body = json["body"] as? String
-        let htmlURL = json["html_url"] as? String
+        // Strip suffix and leading "v" for version comparison
+        var versionPart = rawTag
+        if versionPart.hasSuffix(suffix) {
+            versionPart = String(versionPart.dropLast(suffix.count))
+        }
+        if versionPart.hasPrefix("v") {
+            versionPart = String(versionPart.dropFirst())
+        }
+        guard !versionPart.isEmpty else {
+            throw ReleaseUpdateError.decodeFailed
+        }
 
-        let available = compareVersion(latestVersion, currentVersion) > 0
-        return ReleaseUpdateInfo(
+        let body = match["body"] as? String
+        let htmlURL = match["html_url"] as? String
+
+        let available = compareVersion(versionPart, currentVersion) > 0
+        let result = ReleaseUpdateInfo(
             currentVersion: currentVersion,
-            latestVersion: latestVersion,
+            latestVersion: versionPart,
             notes: body,
             downloadURL: htmlURL,
             isUpdateAvailable: available
         )
+
+        // Cache the result with ETag
+        let etag = http.value(forHTTPHeaderField: "ETag")
+        saveCacheInfo(info: result.toCodable(), owner: owner, repo: repo, platform: platform, etag: etag)
+
+        return result
+    }
+
+    // MARK: - Cache Management
+
+    private func cacheKeyFor(owner: String, repo: String, platform: String) -> String {
+        "\(Self.cacheKey)_\(owner)_\(repo)_\(platform)"
+    }
+
+    private func loadCachedInfo(owner: String, repo: String, platform: String) -> CachedReleaseInfo? {
+        let key = cacheKeyFor(owner: owner, repo: repo, platform: platform)
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let cached = try? JSONDecoder().decode(CachedReleaseInfo.self, from: data) else {
+            return nil
+        }
+
+        // Check if cache is still valid
+        let elapsed = Date().timeIntervalSince(cached.cachedAt)
+        if elapsed > Self.cacheValidityDuration {
+            return nil
+        }
+
+        return cached
+    }
+
+    private func saveCacheInfo(info: ReleaseUpdateInfoCodable, owner: String, repo: String, platform: String, etag: String?) {
+        let key = cacheKeyFor(owner: owner, repo: repo, platform: platform)
+        let cached = CachedReleaseInfo(info: info, cachedAt: Date(), etag: etag)
+        if let data = try? JSONEncoder().encode(cached) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    func clearCache(owner: String, repo: String, platform: String = "macos") {
+        let key = cacheKeyFor(owner: owner, repo: repo, platform: platform)
+        UserDefaults.standard.removeObject(forKey: key)
     }
 
     private func compareVersion(_ lhs: String, _ rhs: String) -> Int {

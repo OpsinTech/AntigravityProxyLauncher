@@ -7,6 +7,23 @@ struct AppDetectionService {
         }
 
         let appURL = FileSystemPaths.targetApp
+        return detectAppBundle(at: appURL)
+    }
+
+    func detectApp(_ app: TargetApp) -> AppInfo? {
+        let previous = FileSystemPaths.activeApp
+        FileSystemPaths.activeApp = app
+        defer { FileSystemPaths.activeApp = previous }
+
+        if app.targetType == .cliBinary {
+            return detectCLIBinary()
+        }
+
+        let appURL = FileSystemPaths.targetApp
+        return detectAppBundle(at: appURL)
+    }
+
+    private func detectAppBundle(at appURL: URL) -> AppInfo? {
         guard FileManager.default.fileExists(atPath: appURL.path) else {
             return nil
         }

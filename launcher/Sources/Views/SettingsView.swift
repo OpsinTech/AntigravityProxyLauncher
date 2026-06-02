@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var appState: LauncherAppState
     @State private var revealGoogleClientSecret = false
+    @State private var revealGithubToken = false
 
     var body: some View {
         ScrollView {
@@ -40,6 +41,23 @@ struct SettingsView: View {
 
                         Toggle("修复完成后自动启动应用", isOn: $appState.settingsDraft.autoLaunchAfterPatch)
                             .toggleStyle(.switch)
+
+                        Divider()
+
+                        HStack {
+                            Image(systemName: "dock.rectangle")
+                                .foregroundStyle(.teal)
+                            Text("外观")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Toggle("隐藏 Dock 图标（仅保留菜单栏图标）", isOn: $appState.settingsDraft.hideDockIcon)
+                            .toggleStyle(.switch)
+
+                        Text("说明：隐藏后需重启应用生效，应用仅显示在菜单栏中。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(20)
                     .background(Color.gray.opacity(0.06))
@@ -208,12 +226,41 @@ struct SettingsView: View {
                                 .textFieldStyle(.roundedBorder)
                         }
 
+                        HStack(spacing: 8) {
+                            Text("GitHub Token")
+                                .frame(width: 100, alignment: .leading)
+
+                            Group {
+                                if revealGithubToken {
+                                    TextField("可选: 提升 API 请求限额", text: $appState.settingsDraft.githubToken)
+                                } else {
+                                    SecureField("可选: 提升 API 请求限额", text: $appState.settingsDraft.githubToken)
+                                }
+                            }
+                            .textFieldStyle(.roundedBorder)
+
+                            Button(revealGithubToken ? "隐藏" : "显示") {
+                                revealGithubToken.toggle()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        Text("说明：未配置 Token 时 GitHub API 每小时限 60 次请求，配置后提升至 5000 次/小时。Token 仅用于检查更新，权限范围只需 public_repo（或无权限亦可）。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
                         HStack(spacing: 10) {
                             Button("检查更新") {
                                 appState.checkLauncherUpdates(manual: true)
                             }
                             .buttonStyle(.borderedProminent)
                             .tint(.purple)
+
+                            Button("强制刷新") {
+                                appState.checkLauncherUpdates(manual: true, forceRefresh: true)
+                            }
+                            .buttonStyle(.bordered)
+                            .help("清除缓存并重新检查")
 
                             if let info = appState.releaseUpdateInfo, info.isUpdateAvailable, !appState.isReleaseVersionIgnored(info.latestVersion) {
                                 Text("发现新版本: \(info.latestVersion)")
