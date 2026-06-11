@@ -50,15 +50,17 @@ struct AntigravityProxyLauncherApp: App {
             let hideDock = AntigravityProxyLauncherApp.loadHideDockIconSetting()
             if hideDock {
                 NSApplication.shared.setActivationPolicy(.accessory)
+                NSApplication.shared.activate(ignoringOtherApps: true)
                 LauncherLogger.info("Dock icon hidden (setting from file)")
             } else {
                 NSApplication.shared.setActivationPolicy(.regular)
+                NSApplication.shared.activate(ignoringOtherApps: true)
             }
-            NSApplication.shared.activate(ignoringOtherApps: true)
             break
         }
 
         LauncherLogger.info("Launcher started in GUI mode. If no terminal output appears, check the app window in Dock/桌面。")
+        ProxyManager.shared.startProxy()
     }
 
     var body: some Scene {
@@ -206,3 +208,146 @@ struct AntigravityProxyLauncherApp: App {
         return (json["hideDockIcon"] as? Bool) ?? false
     }
 }
+
+class ProxyManager {
+    static let shared = ProxyManager()
+    private var process: Process?
+    private let proxyPort = 8081
+
+    private init() {
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.stopProxy()
+        }
+    }
+
+    private func findProxyBinary() -> String? {
+        // Production: bundled in Resources
+        let bundled = Bundle.main.bundlePath + "/Contents/Resources/mitm_proxy"
+        if FileManager.default.fileExists(atPath: bundled) {
+            return bundled
+        }
+        // Development: build output
+        let buildOutput = Bundle.main.bundlePath + "/../../../../tools/mitm_proxy/mitm_proxy"
+        let resolved = (buildOutput as NSString).standardizingPath
+        if FileManager.default.fileExists(atPath: resolved) {
+            return resolved
+        }
+        return nil
+    }
+
+    func startProxy() {
+        guard process == nil || process?.isRunning == false else { return }
+        process = nil
+
+        guard let proxyPath = findProxyBinary() else {
+            LauncherLogger.warn("Go Proxy binary not found")
+            return
+        }
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: proxyPath)
+        task.currentDirectoryURL = URL(fileURLWithPath: Bundle.main.bundlePath + "/Contents/Resources")
+        // 移除代理环境变量，避免 Go 程序错误地将
+        // SOCKS5 代理当作 HTTP CONNECT 代理使用
+        var env = ProcessInfo.processInfo.environment
+        env.removeValue(forKey: "HTTP_PROXY")
+        env.removeValue(forKey: "HTTPS_PROXY")
+        env.removeValue(forKey: "http_proxy")
+        env.removeValue(forKey: "https_proxy")
+        env.removeValue(forKey: "ALL_PROXY")
+        env.removeValue(forKey: "all_proxy")
+        env["MODEL_ROUTING_CONFIG"] = ModelRoutingService().configPath()
+        
+        // Pass the SOCKS5 proxy configuration and config path from user preferences
+        if let config = try? ProxyConfigService().loadForEditor() {
+            env["SOCKS5_PROXY"] = "\(config.proxy.host):\(config.proxy.port)"
+        }
+        env["PROXY_CONFIG"] = FileSystemPaths.userProxyConfigFile.path
+        
+        task.environment = env
+
+        task.terminationHandler = { [weak self] proc in
+            LauncherLogger.warn("Go MITM Proxy exited (code: \(proc.terminationStatus))")
+            self?.process = nil
+        }
+
+        do {
+            try task.run()
+            self.process = task
+            LauncherLogger.info("Go MITM Proxy started (PID: \(task.processIdentifier))")
+
+            // Health check: wait for proxy to be ready
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.verifyProxyHealth(retries: 5)
+            }
+        } catch {
+            LauncherLogger.error("Failed to start Go MITM Proxy: \(error)")
+            self.process = nil
+        }
+    }
+
+    func restartProxy() {
+        stopProxy()
+        startProxy()
+    }
+
+    func stopProxy() {
+        guard let task = process else { return }
+
+        if task.isRunning {
+            task.terminate()
+            // Wait up to 5s for graceful shutdown
+            let deadline = Date().addingTimeInterval(5)
+            while task.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            if task.isRunning {
+                // Force kill
+                kill(task.processIdentifier, SIGKILL)
+                LauncherLogger.warn("Go MITM Proxy force-killed")
+            }
+        }
+        LauncherLogger.info("Go MITM Proxy stopped")
+        process = nil
+    }
+
+    func isProxyRunning() -> Bool {
+        process?.isRunning ?? false
+    }
+
+    func healthCheck() -> Bool {
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else { return false }
+        defer { close(sock) }
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(proxyPort).bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+
+        var timeout = timeval(tv_sec: 1, tv_usec: 0)
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+        let result = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        return result == 0
+    }
+
+    private func verifyProxyHealth(retries: Int) {
+        guard retries > 0 else {
+            LauncherLogger.error("Go MITM Proxy health check failed after retries")
+            return
+        }
+        if healthCheck() {
+            LauncherLogger.info("Go MITM Proxy health check passed")
+        } else {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.verifyProxyHealth(retries: retries - 1)
+            }
+        }
+    }
+}
+

@@ -14,6 +14,9 @@ struct HomeView: View {
                     NavigationLink(value: LauncherTab.config) {
                         Label("代理配置", systemImage: "slider.horizontal.3")
                     }
+                    NavigationLink(value: LauncherTab.modelRouting) {
+                        Label("模型映射", systemImage: "arrow.triangle.branch")
+                    }
                     NavigationLink(value: LauncherTab.quota) {
                         Label("配额管理", systemImage: "chart.bar.doc.horizontal")
                     }
@@ -42,6 +45,8 @@ struct HomeView: View {
                 OverviewView()
             case .config:
                 ConfigView()
+            case .modelRouting:
+                ModelRoutingView()
             case .quota:
                 QuotaView()
             case .diagnostics:

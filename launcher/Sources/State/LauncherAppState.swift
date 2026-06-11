@@ -4,6 +4,7 @@ import AppKit
 enum LauncherTab: Hashable {
     case overview
     case config
+    case modelRouting
     case quota
     case diagnostics
     case runtimeLogs
@@ -40,6 +41,10 @@ final class LauncherAppState: ObservableObject {
     @Published var proxyConfigDraft: ProxyConfig = .default
     @Published var configStatusMessage: String?
     @Published var configErrorMessage: String?
+    @Published var modelRoutingErrorMessage: String?
+    @Published var modelRoutingConfigDraft: ModelRoutingConfig = .default
+    private var hasLoadedModelRoutingConfig = false
+    private let modelRoutingService = ModelRoutingService()
     @Published var lastVerifyMessage: String?
     @Published var lastVerifyError: String?
     @Published var settingsDraft: AppSettings = .default
@@ -106,6 +111,7 @@ final class LauncherAppState: ObservableObject {
 
     func refresh() {
         loadProxyConfig()
+        loadModelRoutingConfig()
         loadSettings()
         reloadDiagnosticsHistory()
         refreshAllAppStatuses()
@@ -390,6 +396,34 @@ final class LauncherAppState: ObservableObject {
         }
     }
 
+    func loadModelRoutingConfig() {
+        do {
+            modelRoutingConfigDraft = try modelRoutingService.load()
+            modelRoutingErrorMessage = nil
+            hasLoadedModelRoutingConfig = true
+        } catch {
+            modelRoutingErrorMessage = "加载模型映射配置失败: \(error.localizedDescription)"
+            appendLog("加载模型映射配置失败: \(error.localizedDescription)")
+        }
+    }
+
+    func loadModelRoutingConfigIfNeeded() {
+        if !hasLoadedModelRoutingConfig {
+            loadModelRoutingConfig()
+        }
+    }
+
+    func saveModelRoutingConfig() {
+        do {
+            try modelRoutingService.save(modelRoutingConfigDraft)
+            modelRoutingErrorMessage = nil
+            appendLog("模型映射配置已保存。")
+        } catch {
+            modelRoutingErrorMessage = "保存模型映射配置失败: \(error.localizedDescription)"
+            appendLog("保存模型映射配置失败: \(error.localizedDescription)")
+        }
+    }
+
     func saveProxyConfig() {
         do {
             let result = try proxyConfigService.saveForNextPatch(proxyConfigDraft)
@@ -634,6 +668,7 @@ final class LauncherAppState: ObservableObject {
         } else {
             NSApplication.shared.setActivationPolicy(.regular)
         }
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     func reloadDiagnosticsHistory() {

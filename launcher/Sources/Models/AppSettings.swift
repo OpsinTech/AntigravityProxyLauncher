@@ -108,9 +108,9 @@ struct AppSettings: Codable, Equatable {
         compatibilityTrustedHosts = try container.decodeIfPresent(String.self, forKey: .compatibilityTrustedHosts)
             ?? "githubusercontent.com, raw.githubusercontent.com"
         compatibilityExpectedSHA256 = try container.decodeIfPresent(String.self, forKey: .compatibilityExpectedSHA256) ?? ""
-        releaseFeedURL = try container.decodeIfPresent(String.self, forKey: .releaseFeedURL) ?? ""
+        releaseFeedURL = try container.decodeIfPresent(String.self, forKey: .releaseFeedURL) ?? "OpsinTech/AntigravityProxyLauncher"
         releaseFeedTrustedHosts = try container.decodeIfPresent(String.self, forKey: .releaseFeedTrustedHosts)
-            ?? "githubusercontent.com, raw.githubusercontent.com"
+            ?? "github.com, api.github.com"
         releaseIgnoredVersion = try container.decodeIfPresent(String.self, forKey: .releaseIgnoredVersion) ?? ""
         enableRuntimeLog = try container.decodeIfPresent(Bool.self, forKey: .enableRuntimeLog) ?? false
         runtimeLogRefreshInterval = max(1, try container.decodeIfPresent(Int.self, forKey: .runtimeLogRefreshInterval) ?? 5)

@@ -13,13 +13,39 @@ echo "=== Building AntigravityProxyLauncher v${VERSION} ==="
 # --- Step 1: Build dylib (universal) ---
 echo "[1/5] Building libAntigravityTun.dylib (universal)..."
 cd "$DYLIB_DIR"
+
+# Build for arm64
 xcodebuild -project AntigravityTun.xcodeproj -scheme AntigravityTun -configuration Release \
-  -arch arm64 -arch x86_64 \
+  -arch arm64 \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+  SYMROOT="$DYLIB_DIR/build_arm64" \
   build 2>&1 | grep -E "BUILD|error" || true
 
+# Build for x86_64
+xcodebuild -project AntigravityTun.xcodeproj -scheme AntigravityTun -configuration Release \
+  -arch x86_64 \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+  SYMROOT="$DYLIB_DIR/build_x86" \
+  build 2>&1 | grep -E "BUILD|error" || true
+
+# Lipo into universal
+mkdir -p "$DYLIB_DIR/build/Release"
+ARM64_DYLIB="$DYLIB_DIR/build_arm64/Release/libAntigravityTun.dylib"
+X86_DYLIB="$DYLIB_DIR/build_x86/Release/libAntigravityTun.dylib"
 DYLIB_SRC="$DYLIB_DIR/build/Release/libAntigravityTun.dylib"
+lipo -create "$ARM64_DYLIB" "$X86_DYLIB" -output "$DYLIB_SRC"
+rm -rf "$DYLIB_DIR/build_arm64" "$DYLIB_DIR/build_x86"
 echo "  Dylib: $(lipo -info "$DYLIB_SRC" | head -1)"
+
+# --- Step 1.5: Build Go Proxy ---
+echo "[1.5/5] Building Go MITM Proxy (universal)..."
+PROXY_DIR="$PROJECT_DIR/../tools/mitm_proxy"
+cd "$PROXY_DIR"
+GOOS=darwin GOARCH=arm64 go build -o mitm_proxy_arm64 .
+GOOS=darwin GOARCH=amd64 go build -o mitm_proxy_x86_64 .
+lipo -create mitm_proxy_arm64 mitm_proxy_x86_64 -output mitm_proxy
+rm mitm_proxy_arm64 mitm_proxy_x86_64
+echo "  Proxy: $(lipo -info "mitm_proxy" | head -1)"
 
 # --- Step 2: Build app for arm64 ---
 echo "[2/5] Building app for arm64..."
@@ -63,8 +89,10 @@ for dylib in "$UNIVERSAL_APP/Contents/MacOS/"*.dylib; do
     fi
 done
 
-# Update the bundled dylib in Resources
+# Update the bundled resources
 cp "$DYLIB_SRC" "$UNIVERSAL_APP/Contents/Resources/libAntigravityTun.dylib"
+cp "$PROXY_DIR/mitm_proxy" "$UNIVERSAL_APP/Contents/Resources/mitm_proxy"
+cp "$PROXY_DIR/.env" "$UNIVERSAL_APP/Contents/Resources/.env"
 
 # --- Step 5: Package ---
 echo "[5/5] Creating DMG and ZIP..."
