@@ -61,12 +61,26 @@ final class LaunchService {
         config.arguments = activeApp.launchArguments
 
         var env = ProcessInfo.processInfo.environment
+        // 移除代理环境变量，避免 Go 程序（language_server）
+        // 错误地将系统代理当作 HTTP CONNECT 代理使用
+        env.removeValue(forKey: "HTTP_PROXY")
+        env.removeValue(forKey: "HTTPS_PROXY")
+        env.removeValue(forKey: "http_proxy")
+        env.removeValue(forKey: "https_proxy")
+        env.removeValue(forKey: "ALL_PROXY")
+        env.removeValue(forKey: "all_proxy")
+
         for (key, value) in activeApp.environmentVariables {
             env[key] = value
         }
 
         env["DYLD_INSERT_LIBRARIES"] = dylibPath
         env["ANTIGRAVITY_CONFIG"] = configPath
+        env["ANTIGRAVITY_LOG_FILE"] = "1"
+        env["ANTIGRAVITY_LOG_LEVEL"] = "error"
+        // Trust MITM proxy's CA cert for Go binaries (SSL_CERT_FILE) and Node.js (NODE_EXTRA_CA_CERTS)
+        env["SSL_CERT_FILE"] = "/tmp/goproxy_ca.pem"
+        env["NODE_EXTRA_CA_CERTS"] = "/tmp/goproxy_ca.pem"
 
         if settings?.enableRuntimeLog == true {
             try FileManager.default.createDirectory(

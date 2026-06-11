@@ -26,6 +26,10 @@ struct FakeIPConfig {
   std::string cidr = "198.18.0.0/15";
 };
 
+struct MitmConfig {
+  bool model_routing_enabled = true; // Default to true for testing, configurable via json
+};
+
 struct TimeoutConfig {
   int connect_ms = 5000;
   int send_ms = 5000;
@@ -89,6 +93,7 @@ private:
 public:
   ProxyConfig proxy;
   FakeIPConfig fakeIp;
+  MitmConfig mitm;
   TimeoutConfig timeout;
   ProxyRules rules;
   bool trafficLogging = false;
@@ -200,6 +205,11 @@ public:
         auto &fip = j["fake_ip"];
         fakeIp.enabled = fip.value("enabled", true);
         fakeIp.cidr = fip.value("cidr", "198.18.0.0/15");
+      }
+
+      if (j.contains("mitm")) {
+        auto &m = j["mitm"];
+        mitm.model_routing_enabled = m.value("model_routing_enabled", true);
       }
 
       if (j.contains("timeout")) {

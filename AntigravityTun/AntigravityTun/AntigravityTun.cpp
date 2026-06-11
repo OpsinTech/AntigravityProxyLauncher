@@ -17,6 +17,25 @@
 #include "Logger.hpp"
 #include "Socks5.hpp"
 #include "interpose.h"
+#include <Security/Security.h>
+#include <mach-o/dyld.h>
+#include <algorithm>
+
+// Check if the current app should be intercepted for MITM
+static bool IsAppAllowedForMitm() {
+    char path[1024];
+    uint32_t size = sizeof(path);
+    if (_NSGetExecutablePath(path, &size) == 0) {
+        std::string execPath(path);
+        std::string lowerPath = execPath;
+        std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
+        // User requested: prioritize antigravity and antigravity ide
+        if (lowerPath.find("antigravity") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
 
 // Thread-safe map to store sockfd -> original FakeIP address mapping
 static std::mutex g_sockfd_map_mtx;
@@ -64,6 +83,23 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
 
         auto &config = Core::Config::Instance();
 
+        bool isMitmDomain = false;
+        
+        // Only map if it's the target app AND model routing is explicitly enabled in config
+        if (config.mitm.model_routing_enabled && IsAppAllowedForMitm()) {
+            isMitmDomain = (domain.find("anthropic.com") != std::string::npos ||
+                            domain.find("deepseek.com") != std::string::npos ||
+                            domain.find("generativelanguage.googleapis.com") != std::string::npos ||
+                            domain.find("cloudcode-pa.googleapis.com") != std::string::npos);
+        }
+                             
+        int targetPort = isMitmDomain ? 8081 : config.proxy.port;
+        std::string targetHost = isMitmDomain ? "127.0.0.1" : config.proxy.host;
+        
+        if (isMitmDomain) {
+            Core::Logger::Info("Hook: Routing AI domain " + domain + " to local MITM proxy at " + targetHost + ":" + std::to_string(targetPort));
+        }
+
         // 优化：用 getsockopt 判断 socket 类型，避免试错 connect
         // 尝试获取 IPV6_V6ONLY 选项，如果成功说明是 IPv6 socket
         int v6only = 0;
@@ -78,24 +114,24 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
           struct sockaddr_in6 proxyAddr6;
           memset(&proxyAddr6, 0, sizeof(proxyAddr6));
           proxyAddr6.sin6_family = AF_INET6;
-          proxyAddr6.sin6_port = htons(config.proxy.port);
+          proxyAddr6.sin6_port = htons(targetPort);
           
           // 首先尝试解析为真正的 IPv6 地址
-          if (inet_pton(AF_INET6, config.proxy.host.c_str(), &proxyAddr6.sin6_addr) != 1) {
+          if (inet_pton(AF_INET6, targetHost.c_str(), &proxyAddr6.sin6_addr) != 1) {
             // 如果解析失败，尝试解析为 IPv4 地址，并转化为 IPv4-Mapped IPv6 (::ffff:x.x.x.x)
             struct in_addr ipv4;
-            if (inet_pton(AF_INET, config.proxy.host.c_str(), &ipv4) == 1) {
+            if (inet_pton(AF_INET, targetHost.c_str(), &ipv4) == 1) {
               proxyAddr6.sin6_addr.s6_addr[10] = 0xff;
               proxyAddr6.sin6_addr.s6_addr[11] = 0xff;
               memcpy(&proxyAddr6.sin6_addr.s6_addr[12], &ipv4.s_addr, 4);
             } else {
-              Core::Logger::Error("Invalid Proxy IP for IPv6 Socket: " + config.proxy.host);
+              Core::Logger::Error("Invalid Proxy IP for IPv6 Socket: " + targetHost);
               errno = EINVAL;
               return -1;
             }
           }
           
-          Core::Logger::Debug("Connecting to Proxy (IPv6/Mapped): " + config.proxy.host + ":" + std::to_string(config.proxy.port));
+          Core::Logger::Debug("Connecting to Proxy (IPv6/Mapped): " + targetHost + ":" + std::to_string(targetPort));
           res = connect(sockfd, (struct sockaddr *)&proxyAddr6, sizeof(proxyAddr6));
           saved_errno = errno;
         } else {
@@ -103,14 +139,14 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
           struct sockaddr_in proxyAddr;
           memset(&proxyAddr, 0, sizeof(proxyAddr));
           proxyAddr.sin_family = AF_INET;
-          proxyAddr.sin_port = htons(config.proxy.port);
-          if (inet_pton(AF_INET, config.proxy.host.c_str(), &proxyAddr.sin_addr) != 1) {
-            Core::Logger::Error("Invalid Proxy IP: " + config.proxy.host);
+          proxyAddr.sin_port = htons(targetPort);
+          if (inet_pton(AF_INET, targetHost.c_str(), &proxyAddr.sin_addr) != 1) {
+            Core::Logger::Error("Invalid Proxy IP: " + targetHost);
             errno = EINVAL;
             return -1;
           }
-          Core::Logger::Debug("Connecting to " + config.proxy.host + ":" + 
-                             std::to_string(config.proxy.port));
+          Core::Logger::Debug("Connecting to " + targetHost + ":" + 
+                             std::to_string(targetPort));
           res = connect(sockfd, (struct sockaddr *)&proxyAddr, sizeof(proxyAddr));
           saved_errno = errno;
         }
@@ -168,35 +204,66 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
           }
         }
 
-        // SOCKS5 握手
-        // 注意：Socks5Client 此时是同步阻塞实现的。
-        // 如果原始 socket 是非阻塞的，我们需要临时切换为阻塞模式。
-        Core::Logger::Debug("Preparing for SOCKS5 handshake, fd=" + std::to_string(sockfd));
-        int flags = fcntl(sockfd, F_GETFL, 0);
-        if (flags < 0) {
-            Core::Logger::Error("Failed to get socket flags, fd=" + std::to_string(sockfd));
-            return -1;
-        }
-        bool isNonBlock = (flags & O_NONBLOCK);
-        Core::Logger::Debug("Socket flags=" + std::to_string(flags) + ", isNonBlock=" + std::to_string(isNonBlock));
+        bool handshakeSuccess = true;
         
-        if (isNonBlock) {
-            Core::Logger::Debug("Temporarily setting socket to blocking mode");
-            if (fcntl(sockfd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
-                Core::Logger::Error("Failed to set blocking mode, fd=" + std::to_string(sockfd));
+        if (!isMitmDomain) {
+            // SOCKS5 握手
+            // 注意：Socks5Client 此时是同步阻塞实现的。
+            // 如果原始 socket 是非阻塞的，我们需要临时切换为阻塞模式。
+            Core::Logger::Debug("Preparing for SOCKS5 handshake, fd=" + std::to_string(sockfd));
+            int flags = fcntl(sockfd, F_GETFL, 0);
+            if (flags < 0) {
+                Core::Logger::Error("Failed to get socket flags, fd=" + std::to_string(sockfd));
                 return -1;
             }
-        }
+            bool isNonBlock = (flags & O_NONBLOCK);
+            Core::Logger::Debug("Socket flags=" + std::to_string(flags) + ", isNonBlock=" + std::to_string(isNonBlock));
+            
+            if (isNonBlock) {
+                Core::Logger::Debug("Temporarily setting socket to blocking mode");
+                if (fcntl(sockfd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
+                    Core::Logger::Error("Failed to set blocking mode, fd=" + std::to_string(sockfd));
+                    return -1;
+                }
+            }
 
-        Core::Logger::Debug("Starting SOCKS5 handshake...");
-        bool handshakeSuccess = Network::Socks5Client::Handshake(sockfd, domain, port);
-        Core::Logger::Debug("SOCKS5 handshake result: " + std::string(handshakeSuccess ? "success" : "failed"));
+            Core::Logger::Debug("Starting SOCKS5 handshake...");
+            handshakeSuccess = Network::Socks5Client::Handshake(sockfd, domain, port);
+            Core::Logger::Debug("SOCKS5 handshake result: " + std::string(handshakeSuccess ? "success" : "failed"));
 
-        // 恢复原始 flags
-        if (isNonBlock) {
-            Core::Logger::Debug("Restoring socket to non-blocking mode");
-            if (fcntl(sockfd, F_SETFL, flags) < 0) {
-                Core::Logger::Error("Failed to restore non-blocking mode, fd=" + std::to_string(sockfd));
+            // 恢复原始 flags
+            if (isNonBlock) {
+                Core::Logger::Debug("Restoring socket to non-blocking mode");
+                if (fcntl(sockfd, F_SETFL, flags) < 0) {
+                    Core::Logger::Error("Failed to restore non-blocking mode, fd=" + std::to_string(sockfd));
+                }
+            }
+        } else {
+            // MITM Proxy HTTP CONNECT 握手
+            Core::Logger::Debug("Preparing for HTTP CONNECT handshake, fd=" + std::to_string(sockfd));
+            int flags = fcntl(sockfd, F_GETFL, 0);
+            bool isNonBlock = (flags & O_NONBLOCK);
+            if (isNonBlock) {
+                fcntl(sockfd, F_SETFL, flags & ~O_NONBLOCK);
+            }
+            
+            std::string req = "CONNECT " + domain + ":" + std::to_string(port) + " HTTP/1.1\r\nHost: " + domain + ":" + std::to_string(port) + "\r\n\r\n";
+            send(sockfd, req.c_str(), req.length(), 0);
+            char buf[1024];
+            int n = recv(sockfd, buf, sizeof(buf) - 1, 0);
+            if (n > 0) {
+                buf[n] = '\0';
+                if (strstr(buf, "HTTP/1.1 200") == nullptr && strstr(buf, "HTTP/1.0 200") == nullptr) {
+                    handshakeSuccess = false;
+                    Core::Logger::Error("MITM CONNECT fail " + domain + ": " + std::string(buf));
+                }
+            } else {
+                handshakeSuccess = false;
+                Core::Logger::Error("MITM CONNECT recv err " + domain + " n=" + std::to_string(n) + " errno=" + std::to_string(errno));
+            }
+            
+            if (isNonBlock) {
+                fcntl(sockfd, F_SETFL, flags);
             }
         }
 
@@ -363,10 +430,31 @@ int my_close(int fd) {
   return close(fd);
 }
 
+// Hook SecTrustEvaluate for SSL Pinning Bypass
+OSStatus my_SecTrustEvaluate(SecTrustRef trust, SecTrustResultType *result) {
+    Core::Logger::Info("Hook: SecTrustEvaluate bypassed!");
+    if (result) {
+        *result = kSecTrustResultProceed;
+    }
+    return errSecSuccess;
+}
+
+// Hook SecTrustEvaluateWithError for SSL Pinning Bypass (macOS 10.14+)
+bool my_SecTrustEvaluateWithError(SecTrustRef trust, CFErrorRef *error) {
+    Core::Logger::Info("Hook: SecTrustEvaluateWithError bypassed!");
+    if (error && *error) {
+        // We could release it if it's set, but usually it's passed as a pointer to NULL
+        *error = NULL;
+    }
+    return true; // true means successful evaluation
+}
+
 DYLD_INTERPOSE(my_connect, connect)
 DYLD_INTERPOSE(my_getaddrinfo, getaddrinfo)
 DYLD_INTERPOSE(my_getpeername, getpeername)
 DYLD_INTERPOSE(my_close, close)
+DYLD_INTERPOSE(my_SecTrustEvaluate, SecTrustEvaluate)
+DYLD_INTERPOSE(my_SecTrustEvaluateWithError, SecTrustEvaluateWithError)
 
 // 构造函数
 __attribute__((constructor)) void LoaderInit() {

@@ -125,7 +125,8 @@ struct ConfigView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         HStack(spacing: 12) {
                             Button("恢复默认") {
-                                appState.loadProxyConfig()
+                                appState.proxyConfigDraft = .default
+                                appState.configStatusMessage = "已恢复默认配置，请点击保存以生效。"
                             }
                             
                             Button(action: {

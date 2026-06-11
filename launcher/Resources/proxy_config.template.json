@@ -5,6 +5,9 @@
     "port": 7897,
     "type": "socks5"
   },
+  "mitm": {
+    "model_routing_enabled": false
+  },
   "fake_ip": {
     "enabled": true,
     "cidr": "198.18.0.0/15"
