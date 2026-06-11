@@ -63,7 +63,7 @@ extension ReleaseUpdateInfo {
 
 struct ReleaseUpdateService {
     private static let cacheKey = "ReleaseUpdateCache"
-    private static let cacheValidityDuration: TimeInterval = 24 * 60 * 60 // 24 hours
+    private static let cacheValidityDuration: TimeInterval = 3600 // 1 hour
 
     func check(
         currentVersion: String,
@@ -118,20 +118,54 @@ struct ReleaseUpdateService {
                          platform: String = "macos",
                          githubToken: String? = nil,
                          forceRefresh: Bool = false) async throws -> ReleaseUpdateInfo {
-        // Check cache first (unless force refresh)
-        if !forceRefresh, let cached = loadCachedInfo(owner: owner, repo: repo, platform: platform) {
-            // Update currentVersion in cached result
-            let available = compareVersion(cached.info.latestVersion, currentVersion) > 0
-            return ReleaseUpdateInfo(
-                currentVersion: currentVersion,
-                latestVersion: cached.info.latestVersion,
-                notes: cached.info.notes,
-                downloadURL: cached.info.downloadURL,
-                isUpdateAvailable: available
-            )
+        let cached = loadCachedInfo(owner: owner, repo: repo, platform: platform)
+
+        // Use cache if valid and force refresh not requested.
+        // But always make a lightweight ETag request to check for updates.
+        if !forceRefresh, let cached {
+            // Try ETag conditional request first (304 = no change, doesn't consume quota)
+            if let etag = cached.etag {
+                let apiURL = "https://api.github.com/repos/\(owner)/\(repo)/releases?per_page=30"
+                guard let url = URL(string: apiURL) else {
+                    throw ReleaseUpdateError.invalidURL
+                }
+                var req = URLRequest(url: url, timeoutInterval: 10)
+                req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+                req.setValue("AntigravityProxyLauncher/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+                req.setValue(etag, forHTTPHeaderField: "If-None-Match")
+                let token = (githubToken ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !token.isEmpty {
+                    req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                }
+
+                if let (_, resp) = try? await URLSession.shared.data(for: req),
+                   let http = resp as? HTTPURLResponse,
+                   http.statusCode == 304 {
+                    // No new release, use cache
+                    let available = compareVersion(cached.info.latestVersion, currentVersion) > 0
+                    return ReleaseUpdateInfo(
+                        currentVersion: currentVersion,
+                        latestVersion: cached.info.latestVersion,
+                        notes: cached.info.notes,
+                        downloadURL: cached.info.downloadURL,
+                        isUpdateAvailable: available
+                    )
+                }
+                // ETag request failed or returned 200 — fall through to full fetch
+            } else {
+                // No ETag cached, use cached result as-is
+                let available = compareVersion(cached.info.latestVersion, currentVersion) > 0
+                return ReleaseUpdateInfo(
+                    currentVersion: currentVersion,
+                    latestVersion: cached.info.latestVersion,
+                    notes: cached.info.notes,
+                    downloadURL: cached.info.downloadURL,
+                    isUpdateAvailable: available
+                )
+            }
         }
 
-        // Fetch recent releases and pick the first one whose tag contains the platform suffix
+        // Full fetch: no cache, force refresh, or ETag indicated new data
         let apiURL = "https://api.github.com/repos/\(owner)/\(repo)/releases?per_page=30"
         guard let url = URL(string: apiURL) else {
             throw ReleaseUpdateError.invalidURL
@@ -148,8 +182,7 @@ struct ReleaseUpdateService {
         }
 
         // Add ETag for conditional request
-        if let cached = loadCachedInfo(owner: owner, repo: repo, platform: platform),
-           let etag = cached.etag {
+        if let cached, let etag = cached.etag {
             request.setValue(etag, forHTTPHeaderField: "If-None-Match")
         }
 
