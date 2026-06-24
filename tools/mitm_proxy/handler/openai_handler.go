@@ -2,7 +2,6 @@ package handler
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -17,29 +16,34 @@ import (
 	"github.com/elazarl/goproxy"
 )
 
-type GeminiHandler struct {
+// OpenAIHandler intercepts OpenAI-format API requests and routes them
+// through configured providers.
+type OpenAIHandler struct {
 	providerRegistry   *provider.Registry
 	translatorRegistry *translator.Registry
 	routingConfig      *config.RoutingConfig
 }
 
-func NewGeminiHandler(
+func NewOpenAIHandler(
 	providerRegistry *provider.Registry,
 	translatorRegistry *translator.Registry,
 	routingConfig *config.RoutingConfig,
-) *GeminiHandler {
-	return &GeminiHandler{
+) *OpenAIHandler {
+	return &OpenAIHandler{
 		providerRegistry:   providerRegistry,
 		translatorRegistry: translatorRegistry,
 		routingConfig:      routingConfig,
 	}
 }
 
-func (h *GeminiHandler) Name() string {
-	return "Gemini"
+func (h *OpenAIHandler) Name() string {
+	return "OpenAI"
 }
 
-func (h *GeminiHandler) Match(req *http.Request) bool {
+// Match checks if the request is an OpenAI-format chat completions request.
+// Matches on: api.openai.com, any host with /chat/completions in path,
+// or any known OpenAI-compatible endpoint patterns.
+func (h *OpenAIHandler) Match(req *http.Request) bool {
 	reqHost := req.URL.Host
 	if reqHost == "" {
 		reqHost = req.Host
@@ -47,106 +51,95 @@ func (h *GeminiHandler) Match(req *http.Request) bool {
 	if host, _, ok := strings.Cut(reqHost, ":"); ok {
 		reqHost = host
 	}
-	return strings.Contains(reqHost, "generativelanguage.googleapis.com") ||
-		strings.Contains(reqHost, "cloudcode-pa.googleapis.com")
+
+	// Match by host: openai.com or common OpenAI-compatible gateways
+	openAIHosts := []string{"api.openai.com", "openai.com"}
+	for _, h := range openAIHosts {
+		if strings.Contains(reqHost, h) {
+			return true
+		}
+	}
+
+	// Match by path: any /chat/completions endpoint (generic OpenAI-compatible)
+	if strings.Contains(req.URL.Path, "chat/completions") {
+		return true
+	}
+
+	return false
 }
 
-func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-	log.Printf("[Gemini] Intercepted: %s %s", r.URL.Host, r.URL.Path)
+func (h *OpenAIHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+	log.Printf("[OpenAI] Intercepted: %s %s", r.URL.Host, r.URL.Path)
 
-	// Always attempt to read body and extract model — don't restrict by path.
-	// Cloud Code may use non-standard paths for content generation.
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 	if err != nil {
-		log.Printf("[Gemini] Failed to read body, passing through: %v", err)
-		return h.handlePassthrough(r, ctx)
+		log.Printf("[OpenAI] Failed to read body: %v", err)
+		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadRequest, "Failed to read body")
 	}
 
-	modelName := h.extractModelFromBody(bodyBytes)
-	if modelName == "" {
-		log.Printf("[Gemini] No model in body, passing through: %s", r.URL.Path)
+	// Extract model from OpenAI-format body
+	var modelDetect struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(bodyBytes, &modelDetect); err != nil || modelDetect.Model == "" {
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
 
-	log.Printf("[Gemini] Detected model: %s, searching routing rules...", modelName)
+	log.Printf("[OpenAI] Detected model: %s", modelDetect.Model)
 
-	rule := h.routingConfig.FindMatchingRule(modelName)
+	// Find matching routing rule
+	rule := h.routingConfig.FindMatchingRule(modelDetect.Model)
 	if rule == nil {
-		log.Printf("[Gemini] No routing rule matched for model=%s, passing through", modelName)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
 
-	log.Printf("[Gemini] Rule matched: %s -> %s @ %s", modelName, rule.TargetModel, rule.TargetProviderID)
+	log.Printf("[OpenAI] Rule matched: %s -> %s @ %s", modelDetect.Model, rule.TargetModel, rule.TargetProviderID)
 
+	// Look up provider
 	providerConfig := h.routingConfig.GetProvider(rule.TargetProviderID)
 	if providerConfig == nil || providerConfig.ApiKey == "" {
-		log.Printf("[Gemini] Provider not configured or missing API key: %s", rule.TargetProviderID)
+		log.Printf("[OpenAI] Provider not configured: %s", rule.TargetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
 
-	trans := h.translatorRegistry.FindTranslator("gemini", providerConfig.Type)
+	// Find translator (openai → provider type)
+	trans := h.translatorRegistry.FindTranslator("openai", providerConfig.Type)
 	if trans == nil {
-		log.Printf("[Gemini] No translator for gemini->%s", providerConfig.Type)
+		log.Printf("[OpenAI] No translator for openai->%s", providerConfig.Type)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
 
 	p, err := h.providerRegistry.GetProvider(rule.TargetProviderID)
 	if err != nil {
-		log.Printf("[Gemini] Provider not found: %s", rule.TargetProviderID)
+		log.Printf("[OpenAI] Provider not found: %s", rule.TargetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
 
+	// Translate request
 	providerReq, err := trans.TranslateRequest(bodyBytes, rule.TargetModel)
 	if err != nil {
-		log.Printf("[Gemini] Translation failed: %v", err)
+		log.Printf("[OpenAI] Translation failed: %v", err)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
 
-	log.Printf("[Gemini] Translating %s -> %s (provider: %s)", modelName, rule.TargetModel, rule.TargetProviderID)
+	log.Printf("[OpenAI] Translating %s -> %s (provider: %s)", modelDetect.Model, rule.TargetModel, rule.TargetProviderID)
 
 	if providerReq.Stream {
 		streamCtx, streamCancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		return h.handleStreamRequest(r, streamCtx, streamCancel, p, providerReq, trans, modelName)
+		return h.handleStreamRequest(r, streamCtx, streamCancel, p, providerReq, trans, modelDetect.Model)
 	}
 	reqCtx, reqCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer reqCancel()
-	return h.handleNonStreamRequest(r, reqCtx, p, providerReq, trans, modelName)
+	return h.handleNonStreamRequest(r, reqCtx, p, providerReq, trans, modelDetect.Model)
 }
 
-func (h *GeminiHandler) handlePassthrough(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-	resp, err := ctx.RoundTrip(r)
-	if err != nil {
-		log.Printf("[Gemini] Passthrough error: %v", err)
-		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream error")
-	}
-
-	bodyBytes, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-
-	if len(bodyBytes) >= 2 && bodyBytes[0] == 0x1f && bodyBytes[1] == 0x8b {
-		gr, gzErr := gzip.NewReader(bytes.NewReader(bodyBytes))
-		if gzErr == nil {
-			decompressed, err := io.ReadAll(gr)
-			gr.Close()
-			if err == nil && len(decompressed) > 0 {
-				bodyBytes = decompressed
-			}
-		}
-	}
-
-	resp.Header.Del("Content-Encoding")
-	resp.ContentLength = int64(len(bodyBytes))
-	resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-	return r, resp
-}
-
-func (h *GeminiHandler) handleNonStreamRequest(
+func (h *OpenAIHandler) handleNonStreamRequest(
 	r *http.Request,
 	ctx context.Context,
 	p provider.Provider,
@@ -156,13 +149,15 @@ func (h *GeminiHandler) handleNonStreamRequest(
 ) (*http.Request, *http.Response) {
 	resp, err := p.SendRequest(ctx, req)
 	if err != nil {
-		log.Printf("[Gemini] Provider error: %v", err)
+		log.Printf("[OpenAI] Provider error: %v", err)
 		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream provider error")
 	}
 
-	geminiRespBytes, err := t.TranslateResponse(resp, sourceModel)
+	// For OpenAI→OpenAI translation with streaming-only providers (e.g. CodeBuddy),
+	// SendRequest may fail. We let it bubble up as an error.
+	oaiRespBytes, err := t.TranslateResponse(resp, sourceModel)
 	if err != nil {
-		log.Printf("[Gemini] Response translation failed: %v", err)
+		log.Printf("[OpenAI] Response translation failed: %v", err)
 		return r, goproxy.NewResponse(r, "text/plain", http.StatusInternalServerError, "Translation error")
 	}
 
@@ -171,12 +166,12 @@ func (h *GeminiHandler) handleNonStreamRequest(
 		ProtoMajor: 1,
 		ProtoMinor: 1,
 		Header:     make(http.Header),
-		Body:       io.NopCloser(bytes.NewBuffer(geminiRespBytes)),
+		Body:       io.NopCloser(bytes.NewBuffer(oaiRespBytes)),
 		Request:    r,
 	}
 }
 
-func (h *GeminiHandler) handleStreamRequest(
+func (h *OpenAIHandler) handleStreamRequest(
 	r *http.Request,
 	ctx context.Context,
 	cancel context.CancelFunc,
@@ -188,7 +183,7 @@ func (h *GeminiHandler) handleStreamRequest(
 	chunks, err := p.SendStreamRequest(ctx, req)
 	if err != nil {
 		cancel()
-		log.Printf("[Gemini] Provider stream error: %v", err)
+		log.Printf("[OpenAI] Provider stream error: %v", err)
 		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream provider error")
 	}
 
@@ -208,7 +203,7 @@ func (h *GeminiHandler) handleStreamRequest(
 					return
 				}
 				if chunk.Error != nil {
-					log.Printf("[Gemini] Stream error: %v", chunk.Error)
+					log.Printf("[OpenAI] Stream error: %v", chunk.Error)
 					return
 				}
 
@@ -219,7 +214,7 @@ func (h *GeminiHandler) handleStreamRequest(
 
 				events, err := t.TranslateStreamChunk(&chunk, sourceModel, state)
 				if err != nil {
-					log.Printf("[Gemini] Chunk translation failed: %v", err)
+					log.Printf("[OpenAI] Chunk translation failed: %v", err)
 					continue
 				}
 				if events != nil {
@@ -242,26 +237,4 @@ func (h *GeminiHandler) handleStreamRequest(
 		Request:       r,
 		ContentLength: -1,
 	}
-}
-
-func (h *GeminiHandler) extractModelFromBody(body []byte) string {
-	// Try top-level "model" field (Cloud Code wrapped format)
-	var detect struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal(body, &detect); err == nil && detect.Model != "" {
-		return detect.Model
-	}
-
-	// Try nested "request.model" (alternative wrapped format)
-	var wrapped struct {
-		Request struct {
-			Model string `json:"model"`
-		} `json:"request"`
-	}
-	if err := json.Unmarshal(body, &wrapped); err == nil && wrapped.Request.Model != "" {
-		return wrapped.Request.Model
-	}
-
-	return ""
 }

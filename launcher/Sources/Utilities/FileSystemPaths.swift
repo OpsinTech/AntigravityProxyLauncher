@@ -118,6 +118,12 @@ enum FileSystemPaths {
         userConfigRoot.appendingPathComponent("proxy_config.json")
     }
 
+    /// 模型路由配置全局唯一，不随 activeApp 变化
+    static var userModelRoutingConfigFile: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/antigravity/model_routing.json")
+    }
+
     static let diagnosticsRoot = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Logs/AntigravityProxyLauncher", isDirectory: true)
 

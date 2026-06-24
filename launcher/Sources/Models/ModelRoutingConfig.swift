@@ -58,10 +58,40 @@ extension ModelRoutingConfig {
             ProviderConfig(
                 id: "deepseek",
                 name: "DeepSeek",
-                enabled: true,
+                enabled: false,
                 apiEndpoint: "api.deepseek.com",
                 apiKey: "",
                 models: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat"]
+            ),
+            ProviderConfig(
+                id: "ofox",
+                name: "OfoxAI",
+                enabled: false,
+                apiEndpoint: "api.ofox.ai",
+                apiKey: "",
+                models: [
+                    "anthropic/claude-sonnet-4-20250514",
+                    "anthropic/claude-opus-4-20250514",
+                    "openai/gpt-oss-120b"
+                ]
+            ),
+            ProviderConfig(
+                id: "codebuddy",
+                name: "CodeBuddy",
+                enabled: false,
+                apiEndpoint: "copilot.tencent.com",
+                apiKey: "",
+                models: [
+                    "glm-5.2",
+                    "glm-5.1",
+                    "kimi-k2.7-code",
+                    "kimi-k2.6",
+                    "deepseek-v4-flash",
+                    "deepseek-v4-pro"
+                ],
+                options: [
+                    "api_path": "/v2/chat/completions"
+                ]
             ),
         ],
         routingRules: [
@@ -70,21 +100,21 @@ extension ModelRoutingConfig {
                 sourceDisplayName: "Claude Sonnet 4.6",
                 targetProviderID: "deepseek",
                 targetModel: "deepseek-v4-flash",
-                enabled: false
+                enabled: true
             ),
             RoutingRule(
                 sourceModelPattern: "claude-opus-4-6",
                 sourceDisplayName: "Claude Opus 4.6",
                 targetProviderID: "deepseek",
                 targetModel: "deepseek-v4-pro",
-                enabled: false
+                enabled: true
             ),
             RoutingRule(
                 sourceModelPattern: "gpt-oss-120b",
                 sourceDisplayName: "GPT OSS 120B",
                 targetProviderID: "deepseek",
                 targetModel: "deepseek-v4-flash",
-                enabled: false
+                enabled: true
             )
         ]
     )

@@ -16,11 +16,12 @@ import (
 // OpenAIProvider implements the Provider interface for OpenAI-compatible APIs
 // This works with DeepSeek, Xiaomi (if OpenAI-compatible), and other similar providers
 type OpenAIProvider struct {
-	config     ProviderConfig
-	httpClient *http.Client
-	apiPath    string
-	authHeader string
-	authPrefix string
+	config       ProviderConfig
+	httpClient   *http.Client
+	apiPath      string
+	authHeader   string
+	authPrefix   string
+	extraHeaders map[string]string
 }
 
 // OpenAIRequest represents an OpenAI API request
@@ -84,6 +85,8 @@ func NewOpenAIProvider(config ProviderConfig) (Provider, error) {
 	authHeader := "Authorization"
 	authPrefix := "Bearer "
 
+	extraHeaders := make(map[string]string)
+
 	if config.Options != nil {
 		if v, ok := config.Options["api_path"]; ok {
 			apiPath = v
@@ -94,14 +97,21 @@ func NewOpenAIProvider(config ProviderConfig) (Provider, error) {
 		if v, ok := config.Options["auth_prefix"]; ok {
 			authPrefix = v
 		}
+		// Parse extra_headers if present (JSON key-value map)
+		if v, ok := config.Options["extra_headers"]; ok && v != "" {
+			if err := json.Unmarshal([]byte(v), &extraHeaders); err != nil {
+				log.Printf("[OpenAI:%s] Failed to parse extra_headers, ignoring: %v", config.ID, err)
+			}
+		}
 	}
 
 	return &OpenAIProvider{
-		config:     config,
-		httpClient: &http.Client{},
-		apiPath:    apiPath,
-		authHeader: authHeader,
-		authPrefix: authPrefix,
+		config:       config,
+		httpClient:   &http.Client{},
+		apiPath:      apiPath,
+		authHeader:   authHeader,
+		authPrefix:   authPrefix,
+		extraHeaders: extraHeaders,
 	}, nil
 }
 
@@ -118,16 +128,19 @@ func (p *OpenAIProvider) Type() string {
 }
 
 // thinkingConfig returns the thinking config for the provider.
-// Defaults to disabled since DeepSeek requires reasoning_content to be
-// passed back in multi-turn conversations, which our translators can't
-// preserve across Gemini/Anthropic format boundaries.
+// Returns nil by default (omits the field from JSON requests).
+// Only returns a value when the provider option "thinking" is explicitly set
+// (e.g. "enabled" for DeepSeek).
 func (p *OpenAIProvider) thinkingConfig() *ThinkingConfig {
 	if p.config.Options != nil {
 		if v, ok := p.config.Options["thinking"]; ok {
 			return &ThinkingConfig{Type: v}
 		}
 	}
-	return &ThinkingConfig{Type: "disabled"}
+	// Return nil → omitempty drops the field from JSON
+	// Prevents "Unknown parameter: 'thinking'" errors on providers that
+	// don't support it (OfoxAI, most OpenAI-compatible gateways).
+	return nil
 }
 
 func (p *OpenAIProvider) SupportedModels() []string {
@@ -170,6 +183,9 @@ func (p *OpenAIProvider) SendRequest(ctx context.Context, req *ProviderRequest) 
 	httpReq.Header.Set("Content-Type", "application/json")
 	if p.config.ApiKey != "" {
 		httpReq.Header.Set(p.authHeader, p.authPrefix+p.config.ApiKey)
+	}
+	for k, v := range p.extraHeaders {
+		httpReq.Header.Set(k, v)
 	}
 
 	resp, err := p.httpClient.Do(httpReq)
@@ -237,6 +253,9 @@ func (p *OpenAIProvider) SendStreamRequest(ctx context.Context, req *ProviderReq
 	httpReq.Header.Set("Content-Type", "application/json")
 	if p.config.ApiKey != "" {
 		httpReq.Header.Set(p.authHeader, p.authPrefix+p.config.ApiKey)
+	}
+	for k, v := range p.extraHeaders {
+		httpReq.Header.Set(k, v)
 	}
 
 	resp, err := p.httpClient.Do(httpReq)

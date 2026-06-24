@@ -27,7 +27,7 @@ struct FakeIPConfig {
 };
 
 struct MitmConfig {
-  bool model_routing_enabled = true; // Default to true for testing, configurable via json
+  bool model_routing_enabled = false; // Default to true for testing, configurable via json
 };
 
 struct TimeoutConfig {
@@ -193,7 +193,7 @@ public:
       if (j.contains("proxy")) {
         auto &p = j["proxy"];
         proxy.host = p.value("host", "127.0.0.1");
-        proxy.port = p.value("port", 7890);
+        proxy.port = p.value("port", 7897);
         proxy.type = p.value("type", "socks5");
       }
 
