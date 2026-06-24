@@ -90,10 +90,11 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
             isMitmDomain = (domain.find("anthropic.com") != std::string::npos ||
                             domain.find("deepseek.com") != std::string::npos ||
                             domain.find("generativelanguage.googleapis.com") != std::string::npos ||
-                            domain.find("cloudcode-pa.googleapis.com") != std::string::npos);
+                            domain.find("cloudcode-pa.googleapis.com") != std::string::npos ||
+                            domain.find("openai.com") != std::string::npos);
         }
                              
-        int targetPort = isMitmDomain ? 8081 : config.proxy.port;
+        int targetPort = isMitmDomain ? 18081 : config.proxy.port;
         std::string targetHost = isMitmDomain ? "127.0.0.1" : config.proxy.host;
         
         if (isMitmDomain) {

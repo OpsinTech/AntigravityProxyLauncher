@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/config"
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/provider"
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/translator"
 	"github.com/elazarl/goproxy"
@@ -22,13 +23,13 @@ const maxRequestBodySize = 10 * 1024 * 1024 // 10MB
 type AnthropicHandler struct {
 	providerRegistry   *provider.Registry
 	translatorRegistry *translator.Registry
-	routingConfig      *RoutingConfig
+	routingConfig      *config.RoutingConfig
 }
 
 func NewAnthropicHandler(
 	providerRegistry *provider.Registry,
 	translatorRegistry *translator.Registry,
-	routingConfig *RoutingConfig,
+	routingConfig *config.RoutingConfig,
 ) *AnthropicHandler {
 	return &AnthropicHandler{
 		providerRegistry:   providerRegistry,

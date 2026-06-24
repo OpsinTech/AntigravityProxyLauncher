@@ -29,7 +29,7 @@ struct ConfigView: View {
                             .bold()
                     }
 
-                    Text("设定底层网络上游拦截策略与代理节点。修改后如应用正在运行，需重启后生效。")
+                    Text("设定底层网络上游拦截策略与代理节点，对所有目标应用生效。修改后如应用正在运行，需重启后生效。")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .padding(.leading, 32)
@@ -82,6 +82,11 @@ struct ConfigView: View {
                         RoundedRectangle(cornerRadius: 12)
                             .stroke(Color.gray.opacity(0.15), lineWidth: 1)
                     )
+
+                    // 代理连通性检测
+                    ProxyCheckCard(host: appState.proxyConfigDraft.proxy.host,
+                                   port: appState.proxyConfigDraft.proxy.port,
+                                   type: appState.proxyConfigDraft.proxy.type)
 
                     // 特性与路由卡片
                     VStack(alignment: .leading, spacing: 16) {
@@ -187,6 +192,103 @@ struct ConfigView: View {
         .onDisappear {
             DispatchQueue.main.async {
                 appState.clearConfigStatusMessage()
+            }
+        }
+    }
+}
+
+// MARK: - Proxy Check Card
+
+private struct ProxyCheckCard: View {
+    let host: String
+    let port: Int
+    let type: String
+
+    @State private var result: ProxyProbeResult?
+    @State private var isChecking = false
+
+    private let service = ProxyConnectivityService()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .foregroundStyle(.green)
+                Text("代理连通性检测")
+                    .font(.headline)
+
+                Spacer()
+
+                Button(action: { check() }) {
+                    checkButtonLabel
+                }
+                .buttonStyle(.plain)
+                .disabled(isChecking)
+            }
+
+            Divider()
+
+            if let r = result {
+                HStack(spacing: 8) {
+                    Image(systemName: r.isOK ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundStyle(r.isOK ? Color.green : Color.red)
+                        .font(.title2)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(r.summary)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundStyle(r.isOK ? Color.green : Color.red)
+
+                        if let err = r.error, !r.isOK {
+                            Text(err)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Spacer()
+                }
+            } else {
+                Text("点击「检测代理」验证上游 SOCKS5/HTTP 代理是否可达。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(20)
+        .background(Color.gray.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+        )
+    }
+
+    private var checkButtonLabel: some View {
+        HStack(spacing: 4) {
+            if isChecking {
+                ProgressView()
+                    .scaleEffect(0.7)
+                    .frame(width: 12, height: 12)
+            }
+            Text(isChecking ? "检测中..." : "检测代理")
+                .font(.system(size: 12, weight: .bold))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(isChecking ? Color.gray.opacity(0.15) : Color.green.opacity(0.15))
+        .foregroundStyle(isChecking ? Color.secondary : Color.green)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func check() {
+        isChecking = true
+        result = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = service.probe(host: host, port: port, type: type)
+            DispatchQueue.main.async {
+                result = r
+                isChecking = false
             }
         }
     }

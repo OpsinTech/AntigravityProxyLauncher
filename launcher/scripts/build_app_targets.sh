@@ -43,6 +43,15 @@ xcodebuild \
 APP_PATH="$DERIVED_DATA_PATH/Build/Products/Debug/AntigravityProxyLauncher.app"
 CLI_PATH="$DERIVED_DATA_PATH/Build/Products/Debug/AntigravityProxyLauncherCLI"
 
+echo "[4/4] Bundle Go MITM proxy"
+MITM_PROXY_SRC="$(cd "$LAUNCHER_ROOT/../tools/mitm_proxy" && pwd)/mitm_proxy"
+if [ -f "$MITM_PROXY_SRC" ]; then
+  cp "$MITM_PROXY_SRC" "$APP_PATH/Contents/Resources/mitm_proxy"
+  echo "  Bundled: $MITM_PROXY_SRC"
+else
+  echo "  WARNING: mitm_proxy binary not found at $MITM_PROXY_SRC, build it first"
+fi
+
 echo "done"
 echo "app: $APP_PATH"
 echo "cli: $CLI_PATH"

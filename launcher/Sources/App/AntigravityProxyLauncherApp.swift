@@ -212,7 +212,7 @@ struct AntigravityProxyLauncherApp: App {
 class ProxyManager {
     static let shared = ProxyManager()
     private var process: Process?
-    private let proxyPort = 8081
+    private let proxyPort = 18081
 
     private init() {
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
@@ -287,28 +287,54 @@ class ProxyManager {
     }
 
     func restartProxy() {
-        stopProxy()
+        // 1. Kill ALL mitm_proxy processes (not just the one we started)
+        let killTask = Process()
+        killTask.launchPath = "/usr/bin/pkill"
+        killTask.arguments = ["-9", "-f", "mitm_proxy"]
+        killTask.launch()
+        killTask.waitUntilExit()
+
+        // 2. Wait for port to be free
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if !isProxyPortInUse() { break }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+
+        // 3. Start fresh
+        process = nil
         startProxy()
     }
 
     func stopProxy() {
-        guard let task = process else { return }
+        let killTask = Process()
+        killTask.launchPath = "/usr/bin/pkill"
+        killTask.arguments = ["-9", "-f", "mitm_proxy"]
+        killTask.launch()
+        killTask.waitUntilExit()
+        process = nil
+        LauncherLogger.info("Go MITM Proxy stopped")
+    }
 
-        if task.isRunning {
-            task.terminate()
-            // Wait up to 5s for graceful shutdown
-            let deadline = Date().addingTimeInterval(5)
-            while task.isRunning && Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.1)
-            }
-            if task.isRunning {
-                // Force kill
-                kill(task.processIdentifier, SIGKILL)
-                LauncherLogger.warn("Go MITM Proxy force-killed")
+    private func isProxyPortInUse() -> Bool {
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else { return true }
+        defer { close(sock) }
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(proxyPort).bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+
+        var timeout = timeval(tv_sec: 0, tv_usec: 200_000)
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+        let result = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        LauncherLogger.info("Go MITM Proxy stopped")
-        process = nil
+        return result == 0
     }
 
     func isProxyRunning() -> Bool {

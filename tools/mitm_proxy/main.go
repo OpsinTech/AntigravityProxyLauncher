@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log"
 	"net"
@@ -29,7 +28,7 @@ func main() {
 	_ = godotenv.Load()
 
 	// Load proxy_config.json to check model_routing_enabled
-	if !isModelRoutingEnabled() {
+	if !config.IsModelRoutingEnabled() {
 		log.Println("[MITM] model_routing_enabled is false, running in passthrough mode only")
 		runPassthroughOnly()
 		return
@@ -46,6 +45,7 @@ func main() {
 	// Register translators
 	translator.RegisterAnthropicToOpenAI(translatorRegistry)
 	translator.RegisterGeminiToOpenAI(translatorRegistry)
+	translator.RegisterOpenAIToOpenAI(translatorRegistry)
 
 	// Load configuration
 	modelRouting := config.LoadModelRouting()
@@ -65,6 +65,7 @@ func main() {
 	// Register handlers
 	handlerRegistry.Register(handler.NewAnthropicHandler(providerRegistry, translatorRegistry, &routingConfig))
 	handlerRegistry.Register(handler.NewGeminiHandler(providerRegistry, translatorRegistry, &routingConfig))
+	handlerRegistry.Register(handler.NewOpenAIHandler(providerRegistry, translatorRegistry, &routingConfig))
 
 	// Create proxy server
 	proxy := goproxy.NewProxyHttpServer()
@@ -134,12 +135,12 @@ func main() {
 	// Read port from env or default
 	port := os.Getenv("MITM_PROXY_PORT")
 	if port == "" {
-		port = "8081"
+		port = "18081"
 	}
 
 	// Create server with timeouts
 	server := &http.Server{
-		Addr:         ":" + port,
+		Addr:         "0.0.0.0:" + port,
 		Handler:      proxy,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 300 * time.Second, // long timeout for SSE streams
@@ -157,47 +158,19 @@ func main() {
 		server.Shutdown(ctx)
 	}()
 
+	listener, err := net.Listen("tcp4", "0.0.0.0:"+port)
+	if err != nil {
+		log.Fatalf("[MITM] Failed to listen on 0.0.0.0:%s: %v", port, err)
+	}
 	log.Println("=================================================")
-	log.Printf("Antigravity MITM Gateway is running on :%s", port)
-	log.Println("Intercepting Anthropic & Google API requests...")
+	log.Printf("Antigravity MITM Gateway is running on 0.0.0.0:%s (IPv4)", port)
+	log.Println("Intercepting Anthropic, Google & OpenAI API requests...")
 	log.Println("=================================================")
 
-	if err := server.ListenAndServe(); err != http.ErrServerClosed {
+	if err := server.Serve(listener); err != http.ErrServerClosed {
 		log.Fatalf("[MITM] Server error: %v", err)
 	}
 	log.Println("[MITM] Server shut down gracefully")
-}
-
-// isModelRoutingEnabled checks proxy_config.json for mitm.model_routing_enabled
-func isModelRoutingEnabled() bool {
-	configPath := os.Getenv("PROXY_CONFIG")
-	if configPath == "" {
-		configPath = os.Getenv("ANTIGRAVITY_CONFIG")
-	}
-	if configPath == "" {
-		home, _ := os.UserHomeDir()
-		configPath = home + "/.config/antigravity/proxy_config.json"
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		log.Printf("[MITM] Cannot read proxy_config at %s, defaulting to passthrough", configPath)
-		return false
-	}
-
-	var cfg struct {
-		Mitm struct {
-			ModelRoutingEnabled *bool `json:"model_routing_enabled"`
-		} `json:"mitm"`
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return true
-	}
-
-	if cfg.Mitm.ModelRoutingEnabled != nil {
-		return *cfg.Mitm.ModelRoutingEnabled
-	}
-	return false
 }
 
 // runPassthroughOnly runs the proxy without model routing
@@ -228,11 +201,11 @@ func runPassthroughOnly() {
 
 	port := os.Getenv("MITM_PROXY_PORT")
 	if port == "" {
-		port = "8081"
+		port = "18081"
 	}
 
 	server := &http.Server{
-		Addr:         ":" + port,
+		Addr:         "0.0.0.0:" + port,
 		Handler:      proxy,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 300 * time.Second,
@@ -248,11 +221,15 @@ func runPassthroughOnly() {
 		server.Shutdown(ctx)
 	}()
 
+	listener, err := net.Listen("tcp4", "0.0.0.0:"+port)
+	if err != nil {
+		log.Fatalf("[MITM] Failed to listen (passthrough) on 0.0.0.0:%s: %v", port, err)
+	}
 	log.Println("=================================================")
-	log.Printf("Antigravity MITM Gateway (passthrough) is running on :%s", port)
+	log.Printf("Antigravity MITM Gateway (passthrough) is running on 0.0.0.0:%s (IPv4)", port)
 	log.Println("=================================================")
 
-	if err := server.ListenAndServe(); err != http.ErrServerClosed {
+	if err := server.Serve(listener); err != http.ErrServerClosed {
 		log.Fatalf("[MITM] Server error: %v", err)
 	}
 }
