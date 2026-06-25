@@ -25,32 +25,15 @@ struct SettingsView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 20) {
-                    // 自动化流程卡片
+                    // 外观卡片
                     VStack(alignment: .leading, spacing: 16) {
-                        HStack {
-                            Image(systemName: "bolt.fill")
-                                .foregroundStyle(.orange)
-                            Text("自动化流程")
-                                .font(.headline)
-                        }
-                        
-                        Divider()
-
-                        Toggle("修复失败时自动导出诊断包", isOn: $appState.settingsDraft.autoExportDiagnosticsOnFailure)
-                            .toggleStyle(.switch)
-
-                        Toggle("修复完成后自动启动应用", isOn: $appState.settingsDraft.autoLaunchAfterPatch)
-                            .toggleStyle(.switch)
-
-                        Divider()
-
                         HStack {
                             Image(systemName: "dock.rectangle")
                                 .foregroundStyle(.teal)
                             Text("外观")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .font(.headline)
                         }
+                        Divider()
 
                         Toggle("隐藏 Dock 图标（仅保留菜单栏图标）", isOn: $appState.settingsDraft.hideDockIcon)
                             .toggleStyle(.switch)
@@ -131,10 +114,10 @@ struct SettingsView: View {
                             }
                                 .textFieldStyle(.roundedBorder)
 
-                            Button(revealGoogleClientSecret ? "隐藏" : "显示") {
-                                revealGoogleClientSecret.toggle()
+                            Button(action: { revealGoogleClientSecret.toggle() }) {
+                                ButtonLabel(icon: revealGoogleClientSecret ? "eye.slash" : "eye", text: revealGoogleClientSecret ? "隐藏" : "显示")
                             }
-                            .buttonStyle(.bordered)
+                            .secondaryActionStyle()
                         }
 
                         Text("说明：若同时设置了环境变量 AG_GOOGLE_CLIENT_ID / AG_GOOGLE_CLIENT_SECRET，环境变量优先。")
@@ -153,46 +136,6 @@ struct SettingsView: View {
                             .stroke(Color.gray.opacity(0.15), lineWidth: 1)
                     )
                     
-                    // 防护与指纹规则卡片
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack {
-                            Image(systemName: "checkmark.shield")
-                                .foregroundStyle(.green)
-                            Text("系统兼容性与拦截边界")
-                                .font(.headline)
-                        }
-                        
-                        Divider()
-
-                        HStack {
-                            Text("下发路由 URL")
-                                .frame(width: 100, alignment: .leading)
-                            TextField("预留: compatibility.json 的下发接口", text: $appState.settingsDraft.compatibilityRulesURL)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        
-                        HStack {
-                            Text("授信根通讯端")
-                                .frame(width: 100, alignment: .leading)
-                            TextField("逗号分隔，如 raw.githubusercontent.com", text: $appState.settingsDraft.compatibilityTrustedHosts)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        
-                        HStack {
-                            Text("预留哈希快照")
-                                .frame(width: 100, alignment: .leading)
-                            TextField("可选: 用于数据下发时的本地 SHA256 强校验锁定", text: $appState.settingsDraft.compatibilityExpectedSHA256)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                    }
-                    .padding(20)
-                    .background(Color.gray.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-                    )
-
                     // 版本更新提醒卡片
                     VStack(alignment: .leading, spacing: 16) {
                         HStack {
@@ -239,10 +182,10 @@ struct SettingsView: View {
                             }
                             .textFieldStyle(.roundedBorder)
 
-                            Button(revealGithubToken ? "隐藏" : "显示") {
-                                revealGithubToken.toggle()
+                            Button(action: { revealGithubToken.toggle() }) {
+                                ButtonLabel(icon: revealGithubToken ? "eye.slash" : "eye", text: revealGithubToken ? "隐藏" : "显示")
                             }
-                            .buttonStyle(.bordered)
+                            .secondaryActionStyle()
                         }
 
                         Text("说明：未配置 Token 时 GitHub API 每小时限 60 次请求，配置后提升至 5000 次/小时。Token 仅用于检查更新，权限范围只需 public_repo（或无权限亦可）。")
@@ -250,16 +193,15 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
 
                         HStack(spacing: 10) {
-                            Button("检查更新") {
-                                appState.checkLauncherUpdates(manual: true)
+                            Button(action: { appState.checkLauncherUpdates(manual: true) }) {
+                                ButtonLabel(icon: "arrow.down.circle", text: "检查更新")
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.purple)
+                            .primaryActionStyle()
 
-                            Button("强制刷新") {
-                                appState.checkLauncherUpdates(manual: true, forceRefresh: true)
+                            Button(action: { appState.checkLauncherUpdates(manual: true, forceRefresh: true) }) {
+                                ButtonLabel(icon: "arrow.clockwise", text: "强制刷新")
                             }
-                            .buttonStyle(.bordered)
+                            .secondaryActionStyle()
                             .help("清除缓存并重新检查")
 
                             if let info = appState.releaseUpdateInfo, info.isUpdateAvailable, !appState.isReleaseVersionIgnored(info.latestVersion) {
@@ -275,10 +217,10 @@ struct SettingsView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
 
-                                Button("恢复提醒") {
-                                    appState.clearIgnoredReleaseVersion()
+                                Button(action: { appState.clearIgnoredReleaseVersion() }) {
+                                    ButtonLabel(icon: "bell", text: "恢复提醒")
                                 }
-                                .buttonStyle(.bordered)
+                                .secondaryActionStyle()
                             }
                         }
 
@@ -302,49 +244,18 @@ struct SettingsView: View {
                             .stroke(Color.gray.opacity(0.15), lineWidth: 1)
                     )
 
-                    // 运行日志 (Run Logs) 卡片
-                    VStack(alignment: .leading, spacing: 16) {
-                        Section(header: Text("运行日志 (Run Logs)").font(.headline)) {
-                            Divider()
-                            
-                            Toggle("启用运行日志日志", isOn: $appState.settingsDraft.enableRuntimeLog)
-                                .toggleStyle(.switch)
-
-                            Picker("日志等级", selection: $appState.settingsDraft.runtimeLogLevel) {
-                                Text("Debug").tag("Debug")
-                                Text("Info").tag("Info")
-                                Text("Warn").tag("Warn")
-                                Text("Error").tag("Error")
-                            }
-
-                            Stepper("刷新时间: \(appState.settingsDraft.runtimeLogRefreshInterval) 秒", value: $appState.settingsDraft.runtimeLogRefreshInterval, in: 1...60)
-                        }
-                    }
-                    .padding(20)
-                    .background(Color.gray.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-                    )
-                    
                     // Footer 行动点与路径说明
                     VStack(alignment: .leading, spacing: 16) {
                         HStack(spacing: 12) {
-                            Button("恢复系统默认") {
-                                appState.loadSettings()
+                            Button(action: { appState.loadSettings() }) {
+                                ButtonLabel(icon: "arrow.counterclockwise", text: "恢复默认")
                             }
+                            .secondaryActionStyle()
                             
-                            Button(action: {
-                                appState.saveSettings()
-                            }) {
-                                HStack {
-                                    Image(systemName: "square.and.arrow.down")
-                                    Text("保存并应用参数")
-                                }
+                            Button(action: { appState.saveSettings() }) {
+                                ButtonLabel(icon: "square.and.arrow.down", text: "保存并应用")
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.gray)
+                            .primaryActionStyle()
                         }
                         
                         Divider()

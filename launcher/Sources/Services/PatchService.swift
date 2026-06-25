@@ -114,7 +114,6 @@ final class PatchService {
         let realBinary = FileSystemPaths.patchedCLIRealBinary
         let wrapper = FileSystemPaths.patchedCLIWrapper
         let dylibDest = FileSystemPaths.patchedCLIDylib
-        let configDest = FileSystemPaths.patchedCLIConfig
         let entitlementsDest = FileSystemPaths.patchedCLIEntitlements
         let userSymlink = FileSystemPaths.targetApp
 
@@ -176,10 +175,9 @@ final class PatchService {
         report("复制 entitlements.plist", onProgress: onProgress)
         try copyFileReplacingExisting(from: entitlementsSource, to: entitlementsDest)
 
-        // 5. Ensure proxy config exists in user config dir
+        // 5. Ensure proxy config exists (global, shared by all apps)
         let configSource = try resolveProxyConfigSource()
-        report("确保代理配置文件存在: \(configSource.path)", onProgress: onProgress)
-        try copyFileReplacingExisting(from: configSource, to: configDest)
+        report("代理配置文件: \(configSource.path)", onProgress: onProgress)
 
         // 6. Re-sign the real binary
         report("重签名 agy-real", onProgress: onProgress)
@@ -207,7 +205,7 @@ final class PatchService {
         export ANTIGRAVITY_CONFIG="$HOME/.config/antigravity/proxy_config.json"
         # Redirect dylib logs to file to keep stderr clean for agy output
         export ANTIGRAVITY_LOG_FILE=1
-        export ANTIGRAVITY_LOG_PATH="/tmp/antigravity_proxy.$$.log"
+        export ANTIGRAVITY_LOG_PATH="$HOME/.config/antigravity/antigravity_proxy.$$.log"
         exec "$SCRIPT_DIR/agy-real" "$@"
         """
         try wrapperContent.write(to: wrapper, atomically: true, encoding: .utf8)
@@ -267,21 +265,13 @@ final class PatchService {
         let dylibSource = try resolveDylibSource()
         try copyFileReplacingExisting(from: dylibSource, to: dylibDestination)
 
-        let configURL = resources.appendingPathComponent("proxy_config.json")
-        let configSource = try resolveProxyConfigSource()
-        try copyFileReplacingExisting(from: configSource, to: configURL)
-
         // Keep helper processes portable: each Helper resolves @executable_path/../Resources
-        // relative to its own bundle, so we mirror runtime assets into helper Resources.
+        // relative to its own bundle, so we mirror the dylib into helper Resources.
         for helperResourceDir in helperResourceDirectories() {
             try fm.createDirectory(at: helperResourceDir, withIntermediateDirectories: true)
             try copyFileReplacingExisting(
                 from: dylibSource,
                 to: helperResourceDir.appendingPathComponent("libAntigravityTun.dylib")
-            )
-            try copyFileReplacingExisting(
-                from: configSource,
-                to: helperResourceDir.appendingPathComponent("proxy_config.json")
             )
         }
     }
@@ -295,7 +285,7 @@ final class PatchService {
         dict["SUEnableAutomaticChecks"] = false
         dict["LSEnvironment"] = [
             "DYLD_INSERT_LIBRARIES": "@executable_path/../Resources/libAntigravityTun.dylib",
-            "ANTIGRAVITY_CONFIG": "@executable_path/../Resources/proxy_config.json"
+            "ANTIGRAVITY_CONFIG": FileSystemPaths.userProxyConfigFile.path
         ]
 
         let nsDict = dict as NSDictionary
@@ -383,24 +373,23 @@ final class PatchService {
 
     private func resolveProxyConfigSource() throws -> URL {
         let fm = FileManager.default
+        let dest = FileSystemPaths.userProxyConfigFile
+        let destDir = dest.deletingLastPathComponent()
 
-        if fm.fileExists(atPath: FileSystemPaths.userProxyConfigFile.path) {
-            return FileSystemPaths.userProxyConfigFile
+        if fm.fileExists(atPath: dest.path) {
+            return dest
         }
+
+        try fm.createDirectory(at: destDir, withIntermediateDirectories: true)
 
         if fm.fileExists(atPath: FileSystemPaths.bundledProxyConfigTemplate.path) {
-            try fm.createDirectory(at: FileSystemPaths.userConfigRoot, withIntermediateDirectories: true)
-            try copyFileReplacingExisting(
-                from: FileSystemPaths.bundledProxyConfigTemplate,
-                to: FileSystemPaths.userProxyConfigFile
-            )
-            return FileSystemPaths.userProxyConfigFile
+            try copyFileReplacingExisting(from: FileSystemPaths.bundledProxyConfigTemplate, to: dest)
+            return dest
         }
 
-        try fm.createDirectory(at: FileSystemPaths.userConfigRoot, withIntermediateDirectories: true)
         let data = try JSONEncoder.pretty.encode(ProxyConfig.default)
-        try data.write(to: FileSystemPaths.userProxyConfigFile)
-        return FileSystemPaths.userProxyConfigFile
+        try data.write(to: dest)
+        return dest
     }
 
     private func copyFileReplacingExisting(from source: URL, to destination: URL) throws {

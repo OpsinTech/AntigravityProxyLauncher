@@ -1,280 +1,256 @@
 import SwiftUI
 
+// MARK: - Data model
+
+private enum FileReferenceSection: CaseIterable {
+    case logs
+    case configs
+
+    var title: String {
+        switch self {
+        case .logs: return "日志文件"
+        case .configs: return "配置文件"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .logs: return "doc.text.magnifyingglass"
+        case .configs: return "gearshape.2"
+        }
+    }
+}
+
+private struct FileReferenceEntry: Identifiable {
+    let id = UUID()
+    let label: String
+    let path: String
+    let iconName: String
+    let section: FileReferenceSection
+    let usesDirectoryForReveal: Bool
+}
+
+// MARK: - Path builder
+
+private func buildFileEntries() -> [FileReferenceEntry] {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+
+    // ── 日志文件（全局） ──
+    var entries: [FileReferenceEntry] = [
+        FileReferenceEntry(
+            label: "Dylib 运行日志",
+            path: home.appendingPathComponent(".config/antigravity").path,
+            iconName: "doc.text",
+            section: .logs,
+            usesDirectoryForReveal: true
+        ),
+        FileReferenceEntry(
+            label: "Go 代理日志",
+            path: home.appendingPathComponent(".config/antigravity/mitm_proxy.log").path,
+            iconName: "terminal",
+            section: .logs,
+            usesDirectoryForReveal: false
+        ),
+        FileReferenceEntry(
+            label: "修复流程日志",
+            path: FileSystemPaths.patchLogFile.path,
+            iconName: "wrench.and.screwdriver",
+            section: .logs,
+            usesDirectoryForReveal: false
+        ),
+
+    ]
+
+    // ── 配置文件（全局） ──
+    entries.append(FileReferenceEntry(
+        label: "偏好设置",
+        path: FileSystemPaths.settingsFile.path,
+        iconName: "gearshape",
+        section: .configs,
+        usesDirectoryForReveal: false
+    ))
+    entries.append(FileReferenceEntry(
+        label: "模型映射配置",
+        path: FileSystemPaths.userModelRoutingConfigFile.path,
+        iconName: "arrow.triangle.branch",
+        section: .configs,
+        usesDirectoryForReveal: false
+    ))
+    entries.append(FileReferenceEntry(
+        label: "MITM CA 证书",
+        path: home.appendingPathComponent(".config/antigravity/goproxy_ca.pem").path,
+        iconName: "lock.shield",
+        section: .configs,
+        usesDirectoryForReveal: false
+    ))
+
+    // ── 配置文件（全局代理配置） ──
+    entries.append(FileReferenceEntry(
+        label: "代理配置",
+        path: FileSystemPaths.userProxyConfigFile.path,
+        iconName: "slider.horizontal.3",
+        section: .configs,
+        usesDirectoryForReveal: false
+    ))
+
+    return entries
+}
+
+// MARK: - Main view
+
 struct DiagnosticsView: View {
     @EnvironmentObject private var appState: LauncherAppState
+    @State private var entries: [FileReferenceEntry] = []
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                // Header
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
-                        Image(systemName: "ladybug.fill")
+                        Image(systemName: "folder.badge.questionmark")
                             .font(.title2)
-                            .foregroundStyle(.pink)
+                            .foregroundStyle(.blue)
                         Text("系统诊断")
                             .font(.title2)
                             .bold()
                     }
-
-                    Text("验证底层注入与网络鉴权。遭遇致命异常时，可在此封转快照生成系统日志包供排查。")
+                    Text("查看平台所有日志与配置文件的存储路径，便于问题排查与手动定位。")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .padding(.leading, 32)
                 }
 
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack(spacing: 12) {
-                        Button(action: {
-                            appState.verifyPatchedApp()
-                        }) {
-                            Image(systemName: "checkmark.shield")
-                            Text("测试底层验证")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(appState.isRunningWorkflow)
-                        .tint(.pink)
-
-                        Button(action: {
-                            appState.exportDiagnostics()
-                        }) {
-                            Image(systemName: "doc.zipper")
-                            Text("导出诊断快照")
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(appState.isRunningWorkflow)
-                    }
-
-                    Group {
-                        if let message = appState.lastVerifyMessage {
-                            HStack {
-                                Image(systemName: "checkmark.circle.fill")
-                                Text(message)
-                            }
-                            .font(.subheadline)
-                            .foregroundStyle(.green)
-                        }
-
-                        if let error = appState.lastVerifyError {
-                            HStack {
-                                Image(systemName: "xmark.circle.fill")
-                                Text(error)
-                            }
-                            .font(.subheadline)
-                            .foregroundStyle(.red)
-                        }
-
-                        if let path = appState.lastExportPath {
-                            HStack(alignment: .top) {
-                                Image(systemName: "folder.badge.gearshape")
-                                Text("已提取系统快照至: \(path)")
-                                    .textSelection(.enabled)
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.blue)
-                        }
-
-                        if let error = appState.lastExportError {
-                            HStack {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                Text("提取拦截: \(error)")
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                        }
-                    }
+                // Section cards
+                ForEach(FileReferenceSection.allCases, id: \.self) { section in
+                    let sectionEntries = entries.filter { $0.section == section }
+                    FileReferenceSectionCard(section: section, entries: sectionEntries)
                 }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.gray.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-                )
-
-                // Log file card
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Image(systemName: "doc.text.viewfinder")
-                            .foregroundStyle(.gray)
-                        Text("日志文件目录")
-                            .font(.headline)
-                    }
-                    Text(FileSystemPaths.patchLogFile.path)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .padding(.top, 4)
-                }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.gray.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-                )
-
-                HStack(alignment: .top, spacing: 16) {
-                    // Failure Aggregates Card
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Image(systemName: "chart.bar.xaxis")
-                                .foregroundStyle(.orange)
-                            Text("系统失败聚合")
-                                .font(.headline)
-                        }
-
-                        if appState.failureAggregates.isEmpty {
-                            Text("暂无失败样本")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.top, 4)
-                        } else {
-                            ForEach(appState.failureAggregates) { item in
-                                HStack(alignment: .top) {
-                                    Text(item.reason)
-                                        .font(.caption)
-                                    Spacer()
-                                    Text("\(item.count) 次")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(.vertical, 2)
-                            }
-                        }
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .background(Color.gray.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-                    )
-
-                    // Diagnostics History Card
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Image(systemName: "clock.arrow.circlepath")
-                                .foregroundStyle(.blue)
-                            Text("追溯历史")
-                                .font(.headline)
-                        }
-
-                        if appState.diagnosticsHistory.isEmpty {
-                            Text("暂无诊断记录")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.top, 4)
-                        } else {
-                            ScrollView {
-                                LazyVStack(alignment: .leading, spacing: 12) {
-                                    ForEach(appState.diagnosticsHistory) { entry in
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            HStack {
-                                                Text(entry.statusTitle)
-                                                    .font(.caption)
-                                                    .bold()
-                                                if entry.hasFailure {
-                                                    Text("失败")
-                                                        .font(.caption2)
-                                                        .padding(.horizontal, 4)
-                                                        .padding(.vertical, 2)
-                                                        .background(Color.red.opacity(0.1))
-                                                        .foregroundStyle(.red)
-                                                        .clipShape(Capsule())
-                                                }
-                                                Spacer()
-                                                Text(entry.createdAt.formatted(date: .omitted, time: .shortened))
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.secondary)
-                                            }
-                                            Text(entry.folderPath)
-                                                .font(.system(.caption2, design: .monospaced))
-                                                .foregroundStyle(.secondary)
-                                                .textSelection(.enabled)
-                                        }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        
-                                        Divider().opacity(0.5)
-                                    }
-                                }
-                            }
-                            .frame(maxHeight: 200)
-                        }
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .background(Color.gray.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-                    )
-                }
-                .fixedSize(horizontal: false, vertical: true)
-
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Image(systemName: "questionmark.bubble")
-                            .foregroundStyle(.indigo)
-                        Text("常见问题")
-                            .font(.headline)
-                    }
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        FAQRow(
-                            question: "修复流程失败了怎么办？",
-                            answer: "先点击“导出诊断快照”，再查看实时日志里最后一个失败阶段；修复配置后点击“测试底层验证”复测。"
-                        )
-                        FAQRow(
-                            question: "验证通过但应用仍异常，怎么排查？",
-                            answer: "先刷新状态，然后到“日志文件目录”定位日志并核对最近错误；必要时清理环境后重新执行修复。"
-                        )
-                        FAQRow(
-                            question: "提示版本不兼容怎么办？",
-                            answer: "前往设置页更新兼容规则并刷新状态；若仍不支持，请先使用已兼容的目标应用版本。"
-                        )
-                        FAQRow(
-                            question: "诊断记录有什么用？",
-                            answer: "“追溯历史”会记录每次诊断结果和路径，可用于复盘故障时间点与复现步骤。"
-                        )
-                    }
-                }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.gray.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-                )
 
                 Spacer()
             }
             .padding(24)
         }
         .onAppear {
-            DispatchQueue.main.async {
-                appState.reloadDiagnosticsHistory()
-            }
+            entries = buildFileEntries()
         }
     }
 }
 
-private struct FAQRow: View {
-    let question: String
-    let answer: String
+// MARK: - Section card
+
+private struct FileReferenceSectionCard: View {
+    let section: FileReferenceSection
+    let entries: [FileReferenceEntry]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(question)
-                .font(.subheadline)
-                .bold()
-            Text(answer)
-                .font(.caption)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: section.iconName)
+                    .foregroundStyle(section == .logs ? .orange : .purple)
+                Text(section.title)
+                    .font(.headline)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(entries) { entry in
+                    FileReferenceRow(entry: entry)
+                    if entry.id != entries.last?.id {
+                        Divider()
+                            .opacity(0.4)
+                            .padding(.leading, 28)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.gray.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+        )
+    }
+}
+
+// MARK: - Row
+
+private struct FileReferenceRow: View {
+    let entry: FileReferenceEntry
+
+    @State private var isHovered = false
+    @State private var justCopied = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: entry.iconName)
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
+                .frame(width: 20)
+
+            Text(entry.label)
+                .font(.system(size: 13, weight: .medium))
+                .lineLimit(1)
+                .help(entry.label)
+
+            Text(entry.path)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(entry.path)
+                .textSelection(.enabled)
+
+            Spacer()
+
+            if isHovered {
+                HStack(spacing: 4) {
+                    Button(action: copyPath) {
+                        Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
+                    }
+                    .iconButtonStyle()
+                    .help(justCopied ? "已复制" : "复制路径")
+
+                    Button(action: revealInFinder) {
+                        Image(systemName: "arrow.right.to.line.compact")
+                    }
+                    .iconButtonStyle()
+                    .help("在 Finder 中显示")
+                }
+                .transition(.opacity)
+            }
+        }
+        .padding(.vertical, 8)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovered = hovering
+            }
+        }
+    }
+
+    private func copyPath() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(entry.path, forType: .string)
+        justCopied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            justCopied = false
+        }
+    }
+
+    private func revealInFinder() {
+        let url = URL(fileURLWithPath: entry.path)
+        if entry.usesDirectoryForReveal {
+            NSWorkspace.shared.open(url)
+        } else {
+            let parentDir = url.deletingLastPathComponent()
+            if FileManager.default.fileExists(atPath: parentDir.path) {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } else {
+                NSWorkspace.shared.open(parentDir)
+            }
         }
     }
 }

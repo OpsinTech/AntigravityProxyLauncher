@@ -6,15 +6,22 @@ struct ModelRoutingView: View {
     @State private var errorMessage: String?
     @State private var isRestarting = false
 
+    private var isModelRoutingEnabled: Bool {
+        appState.proxyConfigDraft.mitm?.modelRoutingEnabled ?? false
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 headerSection
 
-                providerSection
-                routingRulesSection
-
-                controlSection
+                if isModelRoutingEnabled {
+                    providerSection
+                    routingRulesSection
+                    controlSection
+                } else {
+                    disabledBanner
+                }
                 Spacer()
             }
             .padding(24)
@@ -23,6 +30,29 @@ struct ModelRoutingView: View {
             appState.loadProxyConfigIfNeeded()
             appState.loadModelRoutingConfigIfNeeded()
         }
+    }
+
+    private var disabledBanner: some View {
+        VStack(spacing: 16) {
+            Spacer().frame(height: 40)
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 40))
+                .foregroundStyle(.secondary.opacity(0.4))
+            Text("模型映射未启用")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+            Text("请先在「代理设置」中开启「模型映射」开关，然后再配置映射规则。")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("前往代理设置") {
+                appState.selectedTab = .proxySettings
+            }
+            .buttonStyle(.bordered)
+            .tint(.blue)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Header
@@ -134,14 +164,9 @@ struct ModelRoutingView: View {
                     )
                     appState.modelRoutingConfigDraft.routingRules.append(newRule)
                 }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "plus.circle.fill")
-                        Text("添加规则")
-                    }
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.blue)
+                    ButtonLabel(icon: "plus.circle.fill", text: "添加规则")
                 }
-                .buttonStyle(.plain)
+                .secondaryActionStyle()
                 .padding(.top, 4)
             }
             .padding(12)
@@ -166,27 +191,25 @@ struct ModelRoutingView: View {
     private var controlSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
-                Button("恢复默认") {
+                Button(action: {
                     appState.modelRoutingConfigDraft = ModelRoutingConfig.default
                     statusMessage = "已恢复默认映射规则，请点击保存并应用配置。"
-                }
-
-                Button(action: {
-                    saveConfig()
                 }) {
-                    HStack {
-                        if isRestarting {
-                            ProgressView()
-                                .scaleEffect(0.7)
-                                .frame(width: 14, height: 14)
-                        } else {
-                            Image(systemName: "square.and.arrow.down")
+                    ButtonLabel(icon: "arrow.counterclockwise", text: "恢复默认")
+                }
+                .secondaryActionStyle()
+
+                Button(action: { saveConfig() }) {
+                    if isRestarting {
+                        HStack(spacing: 3) {
+                            ProgressView().scaleEffect(0.7).frame(width: 14, height: 14)
+                            Text("重启代理中...").font(.system(size: 11, weight: .bold))
                         }
-                        Text(isRestarting ? "重启代理中..." : "保存并应用配置")
+                    } else {
+                        ButtonLabel(icon: "square.and.arrow.down", text: "保存并应用")
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.purple)
+                .primaryActionStyle()
                 .disabled(isRestarting)
 
                 Spacer()
@@ -269,12 +292,28 @@ struct ProviderCard: View {
 
     private var canTest: Bool { !provider.apiEndpoint.isEmpty && !provider.apiKey.isEmpty }
 
+    private var providerWebsite: URL? {
+        switch provider.id {
+        case "deepseek":  return URL(string: "https://platform.deepseek.com/api_keys")
+        case "ofox":      return URL(string: "https://app.ofox.ai/")
+        case "codebuddy": return URL(string: "https://www.codebuddy.cn/")
+        default:          return nil
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(provider.name)
                     .font(.headline)
                     .foregroundStyle(provider.enabled ? .primary : .secondary)
+                if let url = providerWebsite {
+                    Button(action: { NSWorkspace.shared.open(url) }) {
+                        Image(systemName: "arrow.up.forward.app")
+                    }
+                    .iconButtonStyle()
+                    .help("打开 \(provider.name) 官网")
+                }
                 Spacer()
                 Toggle("", isOn: $provider.enabled)
                     .toggleStyle(.switch)
@@ -331,20 +370,16 @@ struct ProviderCard: View {
                             .frame(width: 50, alignment: .leading)
 
                         Button(action: { testConnection() }) {
-                            HStack(spacing: 4) {
-                                if isTesting {
-                                    ProgressView().scaleEffect(0.7).frame(width: 12, height: 12)
+                            if isTesting {
+                                HStack(spacing: 3) {
+                                    ProgressView().scaleEffect(0.7).frame(width: 14, height: 14)
+                                    Text("测试中...").font(.system(size: 11, weight: .bold))
                                 }
-                                Text(isTesting ? "测试中..." : "测试连接")
-                                    .font(.system(size: 11, weight: .medium))
+                            } else {
+                                ButtonLabel(icon: "play.circle", text: "测试连接")
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(canTest ? Color.blue.opacity(0.12) : Color.gray.opacity(0.08))
-                            .foregroundStyle(canTest ? .blue : .secondary)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
                         }
-                        .buttonStyle(.plain)
+                        .primaryActionStyle()
                         .disabled(!canTest || isTesting)
                         .help("验证 API 连通性并获取可用模型列表")
                     }
@@ -574,10 +609,8 @@ struct RoutingRuleRow: View {
 
             Button(action: onDelete) {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary.opacity(0.5))
             }
-            .buttonStyle(.plain)
+            .iconButtonStyle()
             .help("删除此规则")
         }
         .padding(.vertical, 4)

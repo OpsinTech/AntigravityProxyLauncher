@@ -3,11 +3,10 @@ import AppKit
 
 enum LauncherTab: Hashable {
     case overview
-    case config
+    case proxySettings
     case modelRouting
     case quota
     case diagnostics
-    case runtimeLogs
     case settings
 }
 
@@ -36,8 +35,6 @@ final class LauncherAppState: ObservableObject {
     @Published var logLines: [String] = []
     private var allAppLogs: [TargetApp: [String]] = [:]
     @Published var isRunningWorkflow = false
-    @Published var lastExportPath: String?
-    @Published var lastExportError: String?
     @Published var proxyConfigDraft: ProxyConfig = .default
     @Published var configStatusMessage: String?
     @Published var configErrorMessage: String?
@@ -45,15 +42,9 @@ final class LauncherAppState: ObservableObject {
     @Published var modelRoutingConfigDraft: ModelRoutingConfig = .default
     private var hasLoadedModelRoutingConfig = false
     private let modelRoutingService = ModelRoutingService()
-    @Published var lastVerifyMessage: String?
-    @Published var lastVerifyError: String?
     @Published var settingsDraft: AppSettings = .default
     @Published var settingsStatusMessage: String?
     @Published var settingsErrorMessage: String?
-    @Published var compatibilitySourceText: String = "未知"
-    @Published var compatibilityMetaText: String?
-    @Published var diagnosticsHistory: [DiagnosticsHistoryEntry] = []
-    @Published var failureAggregates: [FailureAggregateEntry] = []
     @Published var quotaDiagnostics: [String: String] = [:]
     @Published var launcherVersionText: String = LauncherAppState.resolveLauncherVersion()
     @Published var releaseUpdateInfo: ReleaseUpdateInfo?
@@ -98,12 +89,10 @@ final class LauncherAppState: ObservableObject {
     private var lastReleaseCheckAt: Date?
 
     private let appDetectionService = AppDetectionService()
-    private let compatibilityService = CompatibilityService()
     private let patchService = PatchService()
     private let verificationService = PatchVerificationService()
     private let launchService = LaunchService()
     private let migrationService = MigrationService()
-    private let diagnosticsService = DiagnosticsService()
     private let proxyConfigService = ProxyConfigService()
     private let settingsService = AppSettingsService()
     private let patchedAppHealthService = PatchedAppHealthService()
@@ -113,7 +102,6 @@ final class LauncherAppState: ObservableObject {
         loadProxyConfig()
         loadModelRoutingConfig()
         loadSettings()
-        reloadDiagnosticsHistory()
         refreshAllAppStatuses()
 
         guard let app = appDetectionService.detectInstalledTargetApp() else {
@@ -124,37 +112,15 @@ final class LauncherAppState: ObservableObject {
 
         appInfo = app
 
-        do {
-            let active = try compatibilityService.loadActiveRegistry()
-            let registry = active.registry
-            compatibilitySourceText = active.source
-            if let meta = compatibilityService.readCacheMetadata() {
-                let formatter = DateFormatter()
-                formatter.dateStyle = .medium
-                formatter.timeStyle = .short
-                let dateStr = formatter.string(from: meta.updatedAt)
-                compatibilityMetaText = "更新于 \(dateStr)，规则数 \(meta.ruleCount)"
-            } else {
-                compatibilityMetaText = nil
-            }
-
-            if compatibilityService.isSupported(app, registry: registry) {
-                switch patchedAppHealthService.evaluate(targetVersion: app.version) {
-                case .missing:
-                    status = .patchedAppMissing
-                case .ready:
-                    status = launchService.isPatchedAppRunning() ? .running : .patchedReady
-                case .outdated:
-                    status = .patchedAppOutdated
-                case .repairRequired(let message):
-                    status = .repairRequired(message)
-                }
-            } else {
-                status = .targetAppUnsupportedVersion(app.version)
-            }
-        } catch {
-            compatibilitySourceText = "加载失败"
-            status = .error("兼容性配置加载失败: \(error.localizedDescription)")
+        switch patchedAppHealthService.evaluate(targetVersion: app.version) {
+            case .missing:
+                status = .patchedAppMissing
+            case .ready:
+                status = launchService.isPatchedAppRunning() ? .running : .patchedReady
+            case .outdated:
+                status = .patchedAppOutdated
+            case .repairRequired(let message):
+                status = .repairRequired(message)
         }
     }
 
@@ -181,6 +147,21 @@ final class LauncherAppState: ObservableObject {
         isRunningWorkflow = true
 
         Task {
+            // 修复前校验代理连通性
+            let cfg = proxyConfigDraft.proxy
+            let probeResult: ProxyProbeResult = await withCheckedContinuation { cont in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    cont.resume(returning: ProxyConnectivityService().probe(host: cfg.host, port: cfg.port, type: cfg.type))
+                }
+            }
+            if !probeResult.isOK {
+                await MainActor.run {
+                    appendLog("修复终止: 代理未连接 (\(probeResult.summary))，请先确保代理连通后再修复。")
+                    status = .error("代理未连接: \(probeResult.summary)")
+                    isRunningWorkflow = false
+                }
+                return
+            }
             await runWorkflow()
         }
     }
@@ -266,16 +247,6 @@ final class LauncherAppState: ObservableObject {
                 clearedTargets.append("修复日志")
             }
 
-            if fm.fileExists(atPath: FileSystemPaths.runtimeLogsRoot.path) {
-                try fm.removeItem(at: FileSystemPaths.runtimeLogsRoot)
-                clearedTargets.append("运行日志目录")
-            }
-            try fm.createDirectory(at: FileSystemPaths.runtimeLogsRoot, withIntermediateDirectories: true)
-
-            let removedTmpLogs = clearTemporaryRuntimeLogs(fileManager: fm)
-            if removedTmpLogs > 0 {
-                clearedTargets.append("/tmp 运行日志 \(removedTmpLogs) 个")
-            }
 
             if clearedTargets.isEmpty {
                 appendLog("日志已清理：未发现可删除的日志文件")
@@ -354,24 +325,6 @@ final class LauncherAppState: ObservableObject {
         }
     }
 
-    func exportDiagnostics() {
-        do {
-            let folder = try diagnosticsService.exportBundle(
-                status: status,
-                appInfo: appInfo,
-                workflowItems: workflowItems,
-                logLines: logLines,
-                quotaDiagnostics: quotaDiagnostics
-            )
-            lastExportPath = folder.path
-            lastExportError = nil
-            appendLog("诊断包已导出: \(folder.path)")
-            reloadDiagnosticsHistory()
-        } catch {
-            lastExportError = error.localizedDescription
-            appendLog("诊断包导出失败: \(error.localizedDescription)")
-        }
-    }
 
     func updateQuotaDiagnostics(_ diagnostics: [String: String]) {
         if quotaDiagnostics != diagnostics {
@@ -385,8 +338,11 @@ final class LauncherAppState: ObservableObject {
             configErrorMessage = nil
             hasLoadedProxyConfig = true
         } catch {
-            configErrorMessage = "加载配置失败: \(error.localizedDescription)"
-            appendLog("加载代理配置失败: \(error.localizedDescription)")
+            // 兜底：加载失败时使用默认值，提示用户编辑保存
+            proxyConfigDraft = .default
+            configErrorMessage = nil
+            configStatusMessage = "首次使用，请编辑代理配置后保存"
+            appendLog("代理配置初始化完成，使用默认值")
         }
     }
 
@@ -427,16 +383,9 @@ final class LauncherAppState: ObservableObject {
     func saveProxyConfig() {
         do {
             let result = try proxyConfigService.saveForNextPatch(proxyConfigDraft)
-            if result.patchedConfigSynced {
-                configStatusMessage = "配置已保存并同步到修复版，重启 Unlock App 后生效。"
-            } else {
-                configStatusMessage = "配置已保存。若尚未生成修复版，将在下次修复时自动注入。"
-            }
+            configStatusMessage = "配置已保存"
             configErrorMessage = nil
             appendLog("代理配置已保存: \(result.userConfigPath)")
-            if result.patchedConfigSynced {
-                appendLog("已同步到修复版资源配置，无需再次修复。")
-            }
         } catch {
             configErrorMessage = "保存配置失败: \(error.localizedDescription)"
             appendLog("保存代理配置失败: \(error.localizedDescription)")
@@ -445,23 +394,6 @@ final class LauncherAppState: ObservableObject {
 
     func clearConfigStatusMessage() {
         configStatusMessage = nil
-    }
-
-    func verifyPatchedApp() {
-        Task {
-            do {
-                try await runBlocking {
-                    try self.verificationService.verifyPatchedResult()
-                }
-                lastVerifyMessage = "patched app 验证通过"
-                lastVerifyError = nil
-                appendLog("patched app 验证通过")
-            } catch {
-                lastVerifyError = "patched app 验证失败: \(error.localizedDescription)"
-                lastVerifyMessage = nil
-                appendLog("patched app 验证失败: \(error.localizedDescription)")
-            }
-        }
     }
 
     func loadSettings() {
@@ -628,39 +560,6 @@ final class LauncherAppState: ObservableObject {
         }
     }
 
-    func refreshCompatibilityRegistry() {
-        let remoteURL = settingsDraft.compatibilityRulesURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !remoteURL.isEmpty else {
-            settingsErrorMessage = "请先填写兼容规则地址"
-            return
-        }
-
-        let trustedHosts = settingsDraft.compatibilityTrustedHosts
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        let expectedSHA = settingsDraft.compatibilityExpectedSHA256
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        Task {
-            do {
-                let registry = try await compatibilityService.refreshRegistryFromRemote(
-                    urlString: remoteURL,
-                    trustedHostPatterns: trustedHosts,
-                    expectedSHA256: expectedSHA.isEmpty ? nil : expectedSHA
-                )
-                settingsStatusMessage = "兼容规则已更新，当前规则数: \(registry.rules.count)"
-                settingsErrorMessage = nil
-                appendLog("兼容规则已更新: \(remoteURL)")
-                refresh()
-            } catch {
-                settingsErrorMessage = "兼容规则更新失败: \(error.localizedDescription)"
-                settingsStatusMessage = nil
-                appendLog("兼容规则更新失败: \(error.localizedDescription)")
-            }
-        }
-    }
 
     func applyDockIconSetting() {
         if settingsDraft.hideDockIcon {
@@ -669,12 +568,6 @@ final class LauncherAppState: ObservableObject {
             NSApplication.shared.setActivationPolicy(.regular)
         }
         NSApplication.shared.activate(ignoringOtherApps: true)
-    }
-
-    func reloadDiagnosticsHistory() {
-        let history = diagnosticsService.loadHistory(limit: 40)
-        diagnosticsHistory = history
-        failureAggregates = diagnosticsService.aggregateFailures(from: history, top: 6)
     }
 
     func refreshAllAppStatuses() {
@@ -722,18 +615,6 @@ final class LauncherAppState: ObservableObject {
             markStep(.detect, as: .completed, detail: "\(app.version)")
             appendLog("检测到应用版本: \(app.version)")
 
-            markStep(.compatibility, as: .running)
-            let registry = try compatibilityService.loadRegistry()
-            guard compatibilityService.isSupported(app, registry: registry) else {
-                markStep(.compatibility, as: .failed, detail: "版本不在兼容范围")
-                status = .targetAppUnsupportedVersion(app.version)
-                appendLog("失败: 版本不在兼容列表")
-                isRunningWorkflow = false
-                return
-            }
-            markStep(.compatibility, as: .completed)
-            appendLog("兼容性校验通过")
-
             markStep(.migration, as: .running)
             try await runBlocking {
                 try self.migrationService.migrateSandboxData()
@@ -759,33 +640,14 @@ final class LauncherAppState: ObservableObject {
             markStep(.verify, as: .completed)
             appendLog("修复结果验证通过")
 
-            if settingsDraft.autoLaunchAfterPatch {
-                markStep(.launch, as: .running)
-                appendLog("自动启动修复版...")
-                status = .launching
-                do {
-                    let _ = try await launchService.launchPatchedApp(settings: settingsDraft)
-                    markStep(.launch, as: .completed)
-                    status = .running
-                    appendLog("启动成功！")
-                } catch {
-                    markStep(.launch, as: .failed, detail: error.localizedDescription)
-                    status = .patchedReady
-                    appendLog("自动启动失败: \(error.localizedDescription) 可手动启动")
-                }
-            } else {
-                markStep(.launch, as: .completed, detail: "待手动启动")
-                status = .patchedReady
-                appendLog("修复完成，可手动启动修复版")
-            }
+            markStep(.launch, as: .completed, detail: "待手动启动")
+            status = .patchedReady
+            appendLog("修复完成，可手动启动修复版")
         } catch {
             markCurrentRunningStepFailed(with: error.localizedDescription)
             status = .error("修复失败: \(error.localizedDescription)")
             appendLog("失败: \(error.localizedDescription)")
-            if settingsDraft.autoExportDiagnosticsOnFailure {
-                exportDiagnostics()
-                appendLog("已自动导出失败诊断包")
-            }
+
         }
 
         isRunningWorkflow = false
@@ -819,33 +681,6 @@ final class LauncherAppState: ObservableObject {
         guard let index = workflowItems.firstIndex(where: { $0.state == .running }) else { return }
         workflowItems[index].state = .failed
         workflowItems[index].detail = detail
-    }
-
-    private func clearTemporaryRuntimeLogs(fileManager: FileManager) -> Int {
-        let tmpURL = URL(fileURLWithPath: "/tmp", isDirectory: true)
-        guard let candidates = try? fileManager.contentsOfDirectory(
-            at: tmpURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return 0
-        }
-
-        let runtimeLogs = candidates.filter {
-            $0.lastPathComponent.hasPrefix("antigravity_proxy") && $0.lastPathComponent.hasSuffix(".log")
-        }
-
-        var removedCount = 0
-        for logURL in runtimeLogs {
-            do {
-                try fileManager.removeItem(at: logURL)
-                removedCount += 1
-            } catch {
-                continue
-            }
-        }
-
-        return removedCount
     }
 
     private func appendLog(_ message: String) {

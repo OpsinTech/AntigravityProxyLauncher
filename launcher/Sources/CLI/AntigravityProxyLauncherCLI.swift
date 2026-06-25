@@ -15,8 +15,6 @@ struct AntigravityProxyLauncherCLI {
         switch LauncherCLICommandParser.parse(from: CommandLine.arguments) {
         case .doctor:
             Darwin.exit(doctor.run())
-        case .exportDiagnostics:
-            Darwin.exit(doctor.exportDiagnosticsFromCLI())
         case .verifyPatched:
             Darwin.exit(doctor.verifyPatchedAppFromCLI())
         case .patchAndLaunch:

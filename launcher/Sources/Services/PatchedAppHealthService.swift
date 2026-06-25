@@ -28,11 +28,9 @@ struct PatchedAppHealthService {
 
         let dylib = FileSystemPaths.patchedApp
             .appendingPathComponent("Contents/Resources/libAntigravityTun.dylib")
-        let config = FileSystemPaths.patchedApp
-            .appendingPathComponent("Contents/Resources/proxy_config.json")
 
-        guard fm.fileExists(atPath: dylib.path), fm.fileExists(atPath: config.path) else {
-            return .repairRequired("修复包缺少关键资源，请重新修复。")
+        guard fm.fileExists(atPath: dylib.path) else {
+            return .repairRequired("修复包缺少 dylib，请重新修复。")
         }
 
         return .ready
@@ -43,7 +41,6 @@ struct PatchedAppHealthService {
         let wrapper = FileSystemPaths.patchedCLIWrapper
         let realBinary = FileSystemPaths.patchedCLIRealBinary
         let dylib = FileSystemPaths.patchedCLIDylib
-        let config = FileSystemPaths.patchedCLIConfig
 
         guard fm.fileExists(atPath: wrapper.path) else { return .missing }
 
@@ -56,8 +53,7 @@ struct PatchedAppHealthService {
         }
 
         guard fm.fileExists(atPath: realBinary.path),
-              fm.fileExists(atPath: dylib.path),
-              fm.fileExists(atPath: config.path) else {
+              fm.fileExists(atPath: dylib.path) else {
             return .repairRequired("修复目录缺少关键资源，请重新修复。")
         }
 

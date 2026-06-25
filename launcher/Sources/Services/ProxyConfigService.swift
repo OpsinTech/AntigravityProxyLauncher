@@ -27,27 +27,53 @@ struct ProxyConfigService {
     }()
 
     func loadForEditor() throws -> ProxyConfig {
+        // If global config exists, load it
         if FileManager.default.fileExists(atPath: FileSystemPaths.userProxyConfigFile.path) {
             return try load(from: FileSystemPaths.userProxyConfigFile)
         }
 
-        if FileSystemPaths.activeApp.targetType == .cliBinary {
-            if FileManager.default.fileExists(atPath: FileSystemPaths.patchedCLIConfig.path) {
-                return try load(from: FileSystemPaths.patchedCLIConfig)
+        // First launch: try to migrate from old per-app paths (best-effort)
+        let oldPaths: [URL] = {
+            let saved = FileSystemPaths.activeApp
+            defer { FileSystemPaths.activeApp = saved }
+            var paths: [URL] = []
+            for app in TargetApp.allCases {
+                FileSystemPaths.activeApp = app
+                let oldFile: URL
+                switch app {
+                case .agy, .claudeCode, .codex:
+                    oldFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/antigravity/proxy_config.json")
+                case .antigravity:
+                    oldFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Antigravity/proxy_config.json")
+                case .antigravityIDE:
+                    oldFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Antigravity IDE/proxy_config.json")
+                case .gemini:
+                    oldFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/AntigravityProxy/gemini/Config/proxy_config.json")
+                }
+                if FileManager.default.fileExists(atPath: oldFile.path), !paths.contains(oldFile) {
+                    paths.append(oldFile)
+                }
             }
+            return paths
+        }()
+
+        if let oldPath = oldPaths.first,
+           let config = try? load(from: oldPath) {
+            _ = try? self.saveForNextPatch(config)
+            return config
+        }
+
+        // Fallback: load from bundled template or default, then save
+        let config: ProxyConfig
+        let templatePath = FileSystemPaths.bundledProxyConfigTemplate
+        if FileManager.default.fileExists(atPath: templatePath.path),
+           let template = try? load(from: templatePath) {
+            config = template
         } else {
-            let patchedConfig = FileSystemPaths.patchedApp
-                .appendingPathComponent("Contents/Resources/proxy_config.json")
-            if FileManager.default.fileExists(atPath: patchedConfig.path) {
-                return try load(from: patchedConfig)
-            }
+            config = .default
         }
-
-        if FileManager.default.fileExists(atPath: FileSystemPaths.bundledProxyConfigTemplate.path) {
-            return try load(from: FileSystemPaths.bundledProxyConfigTemplate)
-        }
-
-        return .default
+        _ = try self.saveForNextPatch(config)
+        return config
     }
 
     func saveForNextPatch(_ config: ProxyConfig) throws -> ProxyConfigSaveResult {
@@ -55,30 +81,15 @@ struct ProxyConfigService {
             throw ProxyConfigServiceError.invalidPort(config.proxy.port)
         }
 
-        try FileManager.default.createDirectory(
-            at: FileSystemPaths.userConfigRoot,
-            withIntermediateDirectories: true
-        )
+        let dir = FileSystemPaths.userProxyConfigFile.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         let data = try encoder.encode(config)
         try data.write(to: FileSystemPaths.userProxyConfigFile)
 
-        var synced = false
-        let patchedConfig: URL
-        if FileSystemPaths.activeApp.targetType == .cliBinary {
-            patchedConfig = FileSystemPaths.patchedCLIConfig
-        } else {
-            patchedConfig = FileSystemPaths.patchedApp
-                .appendingPathComponent("Contents/Resources/proxy_config.json")
-        }
-        if FileManager.default.fileExists(atPath: patchedConfig.path) {
-            try data.write(to: patchedConfig)
-            synced = true
-        }
-
         return ProxyConfigSaveResult(
             userConfigPath: FileSystemPaths.userProxyConfigFile.path,
-            patchedConfigSynced: synced
+            patchedConfigSynced: true
         )
     }
 

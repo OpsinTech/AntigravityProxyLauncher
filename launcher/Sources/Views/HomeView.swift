@@ -11,8 +11,8 @@ struct HomeView: View {
                     NavigationLink(value: LauncherTab.overview) {
                         Label("运行状态", systemImage: "gauge.with.needle")
                     }
-                    NavigationLink(value: LauncherTab.config) {
-                        Label("代理配置", systemImage: "slider.horizontal.3")
+                    NavigationLink(value: LauncherTab.proxySettings) {
+                        Label("代理设置", systemImage: "slider.horizontal.3")
                     }
                     NavigationLink(value: LauncherTab.modelRouting) {
                         Label("模型映射", systemImage: "arrow.triangle.branch")
@@ -25,9 +25,6 @@ struct HomeView: View {
                 Section("维护与设置") {
                     NavigationLink(value: LauncherTab.diagnostics) {
                         Label("系统诊断", systemImage: "stethoscope")
-                    }
-                    NavigationLink(value: LauncherTab.runtimeLogs) {
-                        Label("运行日志", systemImage: "text.alignleft")
                     }
                     NavigationLink(value: LauncherTab.settings) {
                         Label("偏好设置", systemImage: "gearshape")
@@ -43,16 +40,14 @@ struct HomeView: View {
             switch appState.selectedTab {
             case .overview:
                 OverviewView()
-            case .config:
-                ConfigView()
+            case .proxySettings:
+                ProxySettingsView()
             case .modelRouting:
                 ModelRoutingView()
             case .quota:
                 QuotaView()
             case .diagnostics:
                 DiagnosticsView()
-            case .runtimeLogs:
-                RuntimeLogsView()
             case .settings:
                 SettingsView()
             }
@@ -134,6 +129,17 @@ private struct OverviewView: View {
     @State private var justCopiedLogs = false
     @State private var isRefreshHovered = false
     @State private var isRefreshing = false
+    @State private var proxyConnected = false
+
+    private var refreshButtonFg: Color {
+        if isRefreshing || isRefreshHovered { return .blue }
+        return Color.primary.opacity(0.8)
+    }
+    private var refreshButtonBg: Color {
+        if isRefreshing { return Color.blue.opacity(0.18) }
+        if isRefreshHovered { return Color.blue.opacity(0.12) }
+        return Color.primary.opacity(0.08)
+    }
 
     private var isOverviewTabActive: Bool {
         appState.selectedTab == .overview
@@ -170,7 +176,14 @@ private struct OverviewView: View {
                     
                     HStack(spacing: 12) {
                         HStack(spacing: 6) {
-                            ForEach(TargetApp.allCases) { app in
+                            let apps = TargetApp.allCases
+                            ForEach(Array(apps.enumerated()), id: \.element.id) { idx, app in
+                                if app == .claudeCode {
+                                    Text("|")
+                                        .font(.system(size: 11, weight: .light))
+                                        .foregroundStyle(.secondary.opacity(0.4))
+                                }
+                                let isComingSoon = (app == .claudeCode || app == .codex)
                                 Button(action: {
                                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                         appState.selectedApp = app
@@ -180,12 +193,12 @@ private struct OverviewView: View {
                                         Image(systemName: app.iconName)
                                             .font(.system(size: 11))
                                         Text(app.displayName)
-                                            .font(.system(size: 11, weight: .bold)) // 稍微加粗文字，提高辨识度
+                                            .font(.system(size: 11, weight: .bold))
                                     }
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 5)
-                                    .background(appState.selectedApp == app ? Color.blue.opacity(0.20) : Color.primary.opacity(0.08)) // 颜色稍微深点，对比度更佳
-                                    .foregroundStyle(appState.selectedApp == app ? .blue : .primary.opacity(0.75)) // 前景色稍微加深
+                                    .background(appState.selectedApp == app ? Color.blue.opacity(0.20) : Color.primary.opacity(0.08))
+                                    .foregroundStyle(appState.selectedApp == app ? .blue : .primary.opacity(0.75))
                                     .clipShape(Capsule())
                                     .overlay(
                                         Capsule()
@@ -193,7 +206,9 @@ private struct OverviewView: View {
                                     )
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(appState.isRunningWorkflow)
+                                .disabled(appState.isRunningWorkflow || isComingSoon)
+                                .opacity(isComingSoon ? 0.4 : 1.0)
+                                .help(isComingSoon ? "随后版本支持" : "")
                             }
                         }
                     }
@@ -220,9 +235,9 @@ private struct OverviewView: View {
                             }) {
                                 Image(systemName: "arrow.clockwise")
                                     .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(isRefreshing ? Color.blue : (isRefreshHovered ? Color.blue : Color.primary.opacity(0.8)))
+                                    .foregroundStyle(refreshButtonFg)
                                     .padding(5)
-                                    .background(isRefreshing ? Color.blue.opacity(0.18) : (isRefreshHovered ? Color.blue.opacity(0.12) : Color.primary.opacity(0.08)))
+                                    .background(refreshButtonBg)
                                     .clipShape(Circle())
                                     .rotationEffect(.degrees(isRefreshing ? 360 : 0))
                                     .animation(isRefreshing ? .linear(duration: 0.6).repeatCount(1, autoreverses: false) : .default, value: isRefreshing)
@@ -252,68 +267,42 @@ private struct OverviewView: View {
                             if appState.appInfo != nil {
                                 HStack(spacing: 6) {
                                     if appState.status == .running {
-                                        Button(appState.selectedApp.targetType == .cliBinary ? "终止进程" : "关闭应用") {
-                                            appState.stopPatchedAppOnly()
+                                        Button(action: { appState.stopPatchedAppOnly() }) {
+                                            ButtonLabel(icon: "stop.circle", text: appState.selectedApp.targetType == .cliBinary ? "终止进程" : "关闭应用")
                                         }
-                                        .buttonStyle(.plain)
-                                        .font(.system(size: 12, weight: .bold))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 5)
-                                        .background(Color.red.opacity(0.18))
-                                        .foregroundStyle(.red)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        .dangerActionStyle()
                                         .disabled(appState.isRunningWorkflow)
 
-                                        Button("修复应用") {
-                                            appState.patchOnly()
-                                        }
-                                        .buttonStyle(.plain)
-                                        .font(.system(size: 12, weight: .bold))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 5)
-                                        .background(Color.primary.opacity(0.08))
-                                        .foregroundStyle(.primary)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                        .disabled(appState.isRunningWorkflow)
+                                        patchedAppButton(label: "修复应用", disabled: appState.isRunningWorkflow || !proxyConnected)
+                                        cleanEnvironmentButton
                                     } else if appState.status == .patchedReady {
-                                        Button(appState.selectedApp.targetType == .cliBinary ? "验证安装" : "启动应用") {
-                                            appState.launchPatchedAppOnly()
+                                        Button(action: { appState.launchPatchedAppOnly() }) {
+                                            ButtonLabel(icon: "play.circle", text: appState.selectedApp.targetType == .cliBinary ? "验证安装" : "启动应用")
                                         }
-                                        .buttonStyle(.plain)
-                                        .font(.system(size: 12, weight: .bold))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 5)
-                                        .background(Color.green.opacity(0.18))
-                                        .foregroundStyle(.green)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        .successActionStyle()
                                         .disabled(appState.isRunningWorkflow)
 
-                                        Button("修复应用") {
-                                            appState.patchOnly()
-                                        }
-                                        .buttonStyle(.plain)
-                                        .font(.system(size: 12, weight: .bold))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 5)
-                                        .background(Color.primary.opacity(0.08))
-                                        .foregroundStyle(.primary)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                        .disabled(appState.isRunningWorkflow)
+                                        patchedAppButton(label: "修复应用", disabled: appState.isRunningWorkflow || !proxyConnected)
+                                        cleanEnvironmentButton
                                     } else {
-                                        Button("修复应用") {
-                                            appState.patchOnly()
-                                        }
-                                        .buttonStyle(.plain)
-                                        .font(.system(size: 12, weight: .bold))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 5)
-                                        .background(Color.blue.opacity(0.18))
-                                        .foregroundStyle(.blue)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                        .disabled(appState.isRunningWorkflow)
+                                        patchedAppButton(label: "修复应用", disabled: appState.isRunningWorkflow || !proxyConnected)
+                                        cleanEnvironmentButton
                                     }
                                 }
                             }
+                        }
+
+                        // 代理未连接时提示
+                        if !proxyConnected && appState.appInfo != nil {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.orange)
+                                Text("请先在代理设置中点击「检测」确认代理已连接")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.orange)
+                            }
+                            .padding(.top, 4)
                         }
 
                         if let app = appState.appInfo {
@@ -337,9 +326,22 @@ private struct OverviewView: View {
                                     enableAction: false
                                 )
 
-                                ProxyStatusInfo()
+                                ProxyStatusInfo(proxyConnected: $proxyConnected)
 
-                                MitmToggleRow()
+                                HStack(alignment: .top, spacing: 8) {
+                                    Image(systemName: "arrow.triangle.branch")
+                                        .foregroundStyle(.purple)
+                                        .frame(width: 14, alignment: .top)
+                                        .padding(.top, 2)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("模型映射")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+                                        Text(appState.proxyConfigDraft.mitm?.modelRoutingEnabled == true ? "已开启" : "未开启")
+                                            .font(.body)
+                                            .foregroundStyle(appState.proxyConfigDraft.mitm?.modelRoutingEnabled == true ? .green : .secondary)
+                                    }
+                                }
 
                                 InfoItem(icon: "macwindow", title: "官方原版路径", value: app.appPath, isMono: true)
 
@@ -382,51 +384,6 @@ private struct OverviewView: View {
                             .frame(maxWidth: .infinity, minHeight: 160)
                         }
 
-                        Divider()
-                            .opacity(0.3)
-                            .padding(.vertical, 4)
-
-                        HStack {
-                            Spacer()
-                            Button(action: {
-                                showCleanEnvironmentConfirm = true
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "trash")
-                                        .font(.system(size: 9))
-                                    Text("清理环境")
-                                        .font(.system(size: 12, weight: .bold))
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(Color.red.opacity(0.12))
-                                .foregroundStyle(.red)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .stroke(Color.red.opacity(0.22), lineWidth: 1)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(appState.isRunningWorkflow)
-                            .confirmationDialog(
-                                "确认清理环境",
-                                isPresented: $showCleanEnvironmentConfirm,
-                                titleVisibility: .visible
-                            ) {
-                                Button("确认清理", role: .destructive) {
-                                    appState.cleanEnvironment()
-                                }
-                                Button("取消", role: .cancel) {}
-                            } message: {
-                                if appState.selectedApp.targetType == .cliBinary {
-                                    Text("将删除当前 Agy CLI 的修复目录及符号链接，并还原原始二进制文件（如有备份）。")
-                                } else {
-                                    Text("将删除当前 \(appState.selectedApp.displayName) 的解锁版应用及相关配置文件。")
-                                }
-                            }
-                        }
-                        .padding(.top, 4)
                     }
                     .padding(20)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -438,8 +395,7 @@ private struct OverviewView: View {
                     )
                     .shadow(color: .black.opacity(0.03), radius: 6, x: 0, y: 3)
 
-                    QuotaSummaryCard()
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
+
                     }
 
                 HStack(alignment: .top, spacing: 16) {
@@ -593,7 +549,7 @@ private struct OverviewView: View {
                     )
                     .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
                 }
-                .frame(height: 280)
+                .frame(height: 360)
 
                 Spacer(minLength: 10)
             }
@@ -603,38 +559,49 @@ private struct OverviewView: View {
             Task { @MainActor in
                 appState.refresh()
                 authViewModel.reloadState()
-                quotaViewModel.loadCachedSnapshot(for: authViewModel.activeAccountId)
-                quotaViewModel.selectAccount(authViewModel.activeAccountId ?? "")
-                // Start polling if auto-refresh was enabled previously
+                // Start quota polling if auto-refresh was enabled
                 if appState.settingsDraft.quotaAutoRefreshEnabled,
                    authViewModel.activeAccount != nil,
                    !quotaViewModel.isPolling {
                     let interval = max(5, appState.settingsDraft.quotaPollingIntervalSeconds)
                     quotaViewModel.startPolling(intervalSeconds: TimeInterval(interval))
                 }
-                updateQuotaDiagnosticsDeferred()
             }
         }
-        .onChange(of: authViewModel.activeAccountId) { newValue in
-            guard isOverviewTabActive else { return }
-            DispatchQueue.main.async {
-                if let newValue, !newValue.isEmpty {
-                    quotaViewModel.loadCachedSnapshot(for: newValue)
-                    quotaViewModel.selectAccount(newValue)
-                }
-                updateQuotaDiagnosticsDeferred()
-            }
+
+    }
+
+    private var cleanEnvironmentButton: some View {
+        Button(action: { showCleanEnvironmentConfirm = true }) {
+            ButtonLabel(icon: "trash", text: "清理环境")
         }
-        .onChange(of: quotaViewModel.statusText) { _ in
-            guard isOverviewTabActive else { return }
-            updateQuotaDiagnosticsDeferred()
+        .dangerActionStyle()
+        .disabled(appState.isRunningWorkflow)
+        .confirmationDialog(
+            "确认清理环境",
+            isPresented: $showCleanEnvironmentConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("确认清理", role: .destructive) {
+                appState.cleanEnvironment()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            if appState.selectedApp.targetType == .cliBinary {
+                Text("将删除当前 Agy CLI 的修复目录及符号链接，并还原原始二进制文件（如有备份）。")
+            } else {
+                Text("将删除当前 \(appState.selectedApp.displayName) 的解锁版应用及相关配置文件。")
+            }
         }
     }
 
-    private func updateQuotaDiagnosticsDeferred() {
-        DispatchQueue.main.async {
-            appState.updateQuotaDiagnostics(quotaViewModel.diagnosticsSummary)
+    private func patchedAppButton(label: String, disabled: Bool) -> some View {
+        Button(action: { appState.patchOnly() }) {
+            ButtonLabel(icon: "wrench", text: label)
         }
+        .primaryActionStyle()
+        .disabled(disabled)
+        .opacity(disabled ? 0.5 : 1.0)
     }
 
     @ViewBuilder
@@ -950,6 +917,7 @@ private struct InfoItem: View {
 
 private struct ProxyStatusInfo: View {
     @EnvironmentObject private var appState: LauncherAppState
+    @Binding var proxyConnected: Bool
 
     @State private var lastResult: ProxyProbeResult?
     @State private var isChecking = false
@@ -984,16 +952,10 @@ private struct ProxyStatusInfo: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    Button("检测") {
-                        check()
+                    Button(action: { check() }) {
+                        ButtonLabel(icon: "antenna.radiowaves.left.and.right", text: isChecking ? "检测中" : "检测")
                     }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10, weight: .medium))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(isChecking ? Color.gray.opacity(0.15) : Color.green.opacity(0.12))
-                    .foregroundStyle(isChecking ? Color.secondary : Color.green)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .primaryActionStyle()
                     .disabled(isChecking)
                 }
 
@@ -1016,13 +978,12 @@ private struct ProxyStatusInfo: View {
             let r = service.probe(host: cfg.host, port: cfg.port, type: cfg.type)
             DispatchQueue.main.async {
                 lastResult = r
+                proxyConnected = r.isOK
                 isChecking = false
             }
         }
     }
 }
-
-// MARK: - MITM Toggle Row
 
 private struct MitmToggleRow: View {
     @EnvironmentObject private var appState: LauncherAppState

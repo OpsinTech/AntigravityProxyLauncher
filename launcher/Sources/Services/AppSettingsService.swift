@@ -11,6 +11,8 @@ struct AppSettingsService {
     func load() throws -> AppSettings {
         let url = FileSystemPaths.settingsFile
         guard FileManager.default.fileExists(atPath: url.path) else {
+            // 首次启动：写入默认配置
+            try save(.default)
             return .default
         }
 

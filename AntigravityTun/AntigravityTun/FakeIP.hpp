@@ -33,9 +33,30 @@ class FakeIP {
   static constexpr uint32_t kSharedCapacity = 4096;
   static constexpr size_t kSharedDomainMax = 255;
   static constexpr const char *kSharedMapName = "/antigravity_fakeip_map";
-  static constexpr const char *kSharedLockName = "/tmp/antigravity_fakeip.lock";
-  static constexpr const char *kSharedMapFallbackPrefix =
-      "/tmp/antigravity_fakeip_map_";
+
+  /// 返回沙箱安全的数据目录，自动创建
+  static std::string RuntimeDataDir() {
+    std::string home;
+    const char *envHome = getenv("HOME");
+    if (envHome) {
+      home = envHome;
+    } else {
+      struct passwd *pw = getpwuid(getuid());
+      if (pw) home = pw->pw_dir;
+    }
+    std::string dir = home + "/.config/antigravity";
+    mkdir(dir.c_str(), 0755);
+    return dir;
+  }
+
+  static std::string LockFilePath() {
+    return RuntimeDataDir() + "/fakeip.lock";
+  }
+
+  static std::string FallbackMapPath() {
+    return RuntimeDataDir() + "/fakeip_map_" +
+           std::to_string(getuid()) + ".bin";
+  }
 
   struct SharedEntry {
     uint32_t ip;   // 主机字节序
@@ -82,8 +103,7 @@ class FakeIP {
   void EnsureSharedInitialized() {
     std::call_once(m_sharedOnce, [this]() {
       auto fallbackPath = []() {
-        return std::string(kSharedMapFallbackPrefix) +
-               std::to_string(getuid()) + ".bin";
+        return FallbackMapPath();
       };
 
       auto openFallbackFile = [&]() {
@@ -99,7 +119,7 @@ class FakeIP {
       };
 
       // 初始化文件范围锁 (自动回收, 防死锁)
-      m_lockFd = open(kSharedLockName, O_CREAT | O_RDWR, 0666);
+      m_lockFd = open(LockFilePath().c_str(), O_CREAT | O_RDWR, 0666);
       if (m_lockFd == -1) {
         Core::Logger::Error("FakeIP: open lock file failed: " +
                             std::string(strerror(errno)));

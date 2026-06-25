@@ -54,7 +54,6 @@ final class LaunchService {
         let resourcesDir = FileSystemPaths.patchedApp
             .appendingPathComponent("Contents/Resources")
         let dylibPath = resourcesDir.appendingPathComponent("libAntigravityTun.dylib").path
-        let configPath = resourcesDir.appendingPathComponent("proxy_config.json").path
 
         let config = NSWorkspace.OpenConfiguration()
         let activeApp = FileSystemPaths.activeApp
@@ -75,26 +74,16 @@ final class LaunchService {
         }
 
         env["DYLD_INSERT_LIBRARIES"] = dylibPath
-        env["ANTIGRAVITY_CONFIG"] = configPath
+        env["ANTIGRAVITY_CONFIG"] = FileSystemPaths.userProxyConfigFile.path
+        // Dylib 日志：始终开启文件写入，级别由代理配置控制
         env["ANTIGRAVITY_LOG_FILE"] = "1"
-        env["ANTIGRAVITY_LOG_LEVEL"] = "error"
+        let proxyCfg = (try? ProxyConfigService().loadForEditor()) ?? .default
+        env["ANTIGRAVITY_LOG_LEVEL"] = proxyCfg.logLevel
         // Trust MITM proxy's CA cert for Go binaries (SSL_CERT_FILE) and Node.js (NODE_EXTRA_CA_CERTS)
-        env["SSL_CERT_FILE"] = "/tmp/goproxy_ca.pem"
-        env["NODE_EXTRA_CA_CERTS"] = "/tmp/goproxy_ca.pem"
-
-        if settings?.enableRuntimeLog == true {
-            try FileManager.default.createDirectory(
-                at: FileSystemPaths.runtimeLogsRoot,
-                withIntermediateDirectories: true
-            )
-            env["ANTIGRAVITY_LOG_FILE"] = "1"
-            env["ANTIGRAVITY_LOG_LEVEL"] = settings?.runtimeLogLevel ?? "Info"
-            env["ANTIGRAVITY_LOG_PATH"] = FileSystemPaths.runtimeLogFile.path
-        } else {
-            env.removeValue(forKey: "ANTIGRAVITY_LOG_FILE")
-            env.removeValue(forKey: "ANTIGRAVITY_LOG_LEVEL")
-            env.removeValue(forKey: "ANTIGRAVITY_LOG_PATH")
-        }
+        let caCertPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/antigravity/goproxy_ca.pem").path
+        env["SSL_CERT_FILE"] = caCertPath
+        env["NODE_EXTRA_CA_CERTS"] = caCertPath
 
         config.environment = env
         config.createsNewApplicationInstance = true
@@ -217,16 +206,10 @@ final class LaunchService {
     }
 
     func runtimeEnvironmentDescription() -> [String: String] {
-        let dylibPath = FileSystemPaths.patchedApp
-            .appendingPathComponent("Contents/Resources/libAntigravityTun.dylib")
-            .path
-        let configPath = FileSystemPaths.patchedApp
-            .appendingPathComponent("Contents/Resources/proxy_config.json")
-            .path
-
         return [
-            "DYLD_INSERT_LIBRARIES": dylibPath,
-            "ANTIGRAVITY_CONFIG": configPath
+            "DYLD_INSERT_LIBRARIES": FileSystemPaths.patchedApp
+                .appendingPathComponent("Contents/Resources/libAntigravityTun.dylib").path,
+            "ANTIGRAVITY_CONFIG": FileSystemPaths.userProxyConfigFile.path
         ]
     }
 
@@ -310,11 +293,6 @@ final class LaunchService {
                 var env = ProcessInfo.processInfo.environment
                 env.removeValue(forKey: "DYLD_INSERT_LIBRARIES")
                 env.removeValue(forKey: "ANTIGRAVITY_CONFIG")
-                if let settings, settings.enableRuntimeLog {
-                    env["ANTIGRAVITY_LOG_FILE"] = "1"
-                    env["ANTIGRAVITY_LOG_LEVEL"] = settings.runtimeLogLevel
-                    env["ANTIGRAVITY_LOG_PATH"] = FileSystemPaths.runtimeLogFile.path
-                }
                 process.environment = env
 
                 let pipe = Pipe()
