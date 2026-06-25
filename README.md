@@ -29,7 +29,13 @@
 
 ---
 
-## 功能
+## 📖 操作文档
+
+每个功能的详细操作步骤、截图、FAQ → **[GitHub Wiki](https://github.com/OpsinTech/AntigravityProxyLauncher/wiki)**
+
+---
+
+## 功能概览
 
 | 标签页 | 说明 |
 |--------|------|
@@ -37,10 +43,8 @@
 | 代理设置 | 全局代理节点配置、连通性检测、日志级别、模型映射开关 |
 | 模型映射 | AI API 跨厂商转译规则（内置 DeepSeek / OfoxAI / CodeBuddy） |
 | 配额管理 | Google OAuth 登录，实时配额看板 |
-| 系统诊断 | 所有日志和配置文件路径一览 |
-| 偏好设置 | Launcher 自身行为配置 |
-
-> 📖 详细操作文档：[GitHub Wiki](https://github.com/OpsinTech/AntigravityProxyLauncher/wiki)
+| 系统诊断 | 所有日志和配置文件路径一览，支持复制/Finder 定位 |
+| 偏好设置 | 外观、配额轮询、OAuth 凭据、更新检测 |
 
 ---
 
