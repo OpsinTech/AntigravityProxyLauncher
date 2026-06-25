@@ -2,8 +2,6 @@ import Foundation
 
 struct LauncherDoctor {
     private let detection = AppDetectionService()
-    private let compatibility = CompatibilityService()
-    private let diagnostics = DiagnosticsService()
     private let verifier = PatchVerificationService()
     private let patch = PatchService()
     private let migration = MigrationService()
@@ -37,22 +35,6 @@ struct LauncherDoctor {
         }
         print("Architectures: \(app.architectures.joined(separator: ", "))")
 
-        do {
-            let registry = try compatibility.loadRegistry()
-            let supported = compatibility.isSupported(app, registry: registry)
-            print("兼容性: \(supported ? "支持" : "不支持")")
-            if !supported {
-                let failure = LauncherFailure(code: .unsupportedVersion, message: "目标版本不在兼容列表")
-                print("错误: \(failure.formatted)")
-                print("建议: 更新 Sources/Compatibility/compatibility.json")
-                return failure.codeValue
-            }
-        } catch {
-            let failure = LauncherErrorMapper.map(error)
-            print("兼容性检查失败: \(failure.formatted)")
-            return failure.codeValue
-        }
-
         let dylibSource = FileSystemPaths.runtimeDylibCandidates.first {
             FileManager.default.fileExists(atPath: $0.path)
         }
@@ -70,29 +52,6 @@ struct LauncherDoctor {
         return LauncherErrorCode.success.rawValue
     }
 
-    func exportDiagnosticsFromCLI() -> Int32 {
-        let code = run()
-        if code != 0 {
-            print("导出已跳过: 先修复 doctor 检查失败项。")
-            return code
-        }
-
-        do {
-            let app = detection.detectInstalledTargetApp()
-            let folder = try diagnostics.exportBundle(
-                status: .targetAppInstalled,
-                appInfo: app,
-                workflowItems: [],
-                logLines: ["CLI export generated at \(Date())"]
-            )
-            print("诊断包已导出: \(folder.path)")
-            return LauncherErrorCode.success.rawValue
-        } catch {
-            let failure = LauncherFailure(code: .diagnosticsExportFailed, message: error.localizedDescription)
-            print("诊断包导出失败: \(failure.formatted)")
-            return failure.codeValue
-        }
-    }
 
     func verifyPatchedAppFromCLI() -> Int32 {
         do {

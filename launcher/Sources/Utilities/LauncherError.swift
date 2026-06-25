@@ -5,7 +5,6 @@ enum LauncherErrorCode: Int32 {
 
     case targetAppMissing = 1001
     case unsupportedVersion = 1002
-    case compatibilityRegistryError = 1003
 
     case patchFailed = 1101
     case runtimeAssetMissing = 1102
@@ -62,9 +61,6 @@ enum LauncherErrorMapper {
             }
         }
 
-        if let compatibility = error as? CompatibilityError {
-            return .init(code: .compatibilityRegistryError, message: String(describing: compatibility))
-        }
 
         if let command = error as? CommandRunnerError {
             return .init(code: .commandExecutionFailed, message: String(describing: command))

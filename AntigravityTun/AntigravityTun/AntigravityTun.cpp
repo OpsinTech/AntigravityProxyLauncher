@@ -48,7 +48,7 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
 
   // 初始化配置（仅执行一次）
   static bool init = []() {
-    Core::Logger::Init("/tmp/antigravity_proxy.log");
+    Core::Logger::Init(Core::Logger::LogPath("antigravity_proxy.log"));
     Core::Config::Instance().Load();
     return true;
   }();
@@ -366,7 +366,7 @@ int my_getaddrinfo(const char *node, const char *service,
 
   // 初始化配置
   static bool init = []() {
-    Core::Logger::Init("/tmp/antigravity_proxy_loader.log");
+    Core::Logger::Init(Core::Logger::LogPath("antigravity_proxy_loader.log"));
     Core::Config::Instance().Load();
     return true;
   }();
@@ -459,6 +459,6 @@ DYLD_INTERPOSE(my_SecTrustEvaluateWithError, SecTrustEvaluateWithError)
 
 // 构造函数
 __attribute__((constructor)) void LoaderInit() {
-  Core::Logger::Init("/tmp/antigravity_proxy_loader.log");
+  Core::Logger::Init(Core::Logger::LogPath("antigravity_proxy_loader.log"));
   Core::Logger::Info("AntigravityTun Loaded.");
 }

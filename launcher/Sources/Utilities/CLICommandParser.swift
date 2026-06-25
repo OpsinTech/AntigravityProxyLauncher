@@ -2,7 +2,6 @@ import Foundation
 
 enum LauncherCLICommand: Equatable {
     case doctor
-    case exportDiagnostics
     case verifyPatched
     case patchAndLaunch
     case help
@@ -21,7 +20,6 @@ enum LauncherCLICommandParser {
 
             switch arg {
             case "--doctor": return .doctor
-            case "--export-diagnostics": return .exportDiagnostics
             case "--verify-patched": return .verifyPatched
             case "--patch-and-launch": return .patchAndLaunch
             case "--help", "-h": return .help

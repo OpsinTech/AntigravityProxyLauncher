@@ -83,15 +83,8 @@ enum FileSystemPaths {
     }
 
     static var settingsFile: URL {
-        appSupportRoot.appendingPathComponent("settings.json")
-    }
-
-    static var compatibilityRegistryCacheFile: URL {
-        appSupportRoot.appendingPathComponent("compatibility.registry.json")
-    }
-
-    static var compatibilityRegistryCacheMetaFile: URL {
-        appSupportRoot.appendingPathComponent("compatibility.registry.meta.json")
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/antigravity/settings.json")
     }
 
     static var metadataRoot: URL {
@@ -108,14 +101,16 @@ enum FileSystemPaths {
                 .appendingPathComponent("Library/Application Support/Antigravity IDE", isDirectory: true)
         case .gemini:
             return appSupportRoot.appendingPathComponent("Config", isDirectory: true)
-        case .agy:
+        case .agy, .claudeCode, .codex:
             return FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".config/antigravity", isDirectory: true)
         }
     }
 
+    /// 代理配置全局唯一，不随 activeApp 变化
     static var userProxyConfigFile: URL {
-        userConfigRoot.appendingPathComponent("proxy_config.json")
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/antigravity/proxy_config.json")
     }
 
     /// 模型路由配置全局唯一，不随 activeApp 变化
@@ -124,19 +119,8 @@ enum FileSystemPaths {
             .appendingPathComponent(".config/antigravity/model_routing.json")
     }
 
-    static let diagnosticsRoot = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Logs/AntigravityProxyLauncher", isDirectory: true)
-
     static let patchLogFile = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Logs/AntigravityProxy/patch.log")
-
-    static var runtimeLogsRoot: URL {
-        appSupportRoot.appendingPathComponent("runtime_logs", isDirectory: true)
-    }
-
-    static var runtimeLogFile: URL {
-        runtimeLogsRoot.appendingPathComponent("antigravity_proxy.log")
-    }
+        .appendingPathComponent(".config/antigravity/patch.log")
 
     // MARK: - CLI-specific paths
 
@@ -170,9 +154,7 @@ enum FileSystemPaths {
             appSupportRoot,
             metadataRoot,
             userConfigRoot,
-            diagnosticsRoot,
-            patchLogFile.deletingLastPathComponent(),
-            runtimeLogsRoot
+            patchLogFile.deletingLastPathComponent()
         ]
         if activeApp.targetType == .cliBinary {
             dirs.append(patchedCLIDir)
@@ -205,12 +187,6 @@ enum FileSystemPaths {
     static var bundledGoogleOAuthClientConfig: URL {
         bundleResourceURL(named: "google_oauth_client", withExtension: "json")
             ?? launcherRoot.appendingPathComponent("Resources/google_oauth_client.json")
-    }
-
-    static var bundledCompatibilityRegistry: URL? {
-        bundleResourceURL(named: "compatibility", withExtension: "json")
-            ?? bundleResourceURL(named: "compatibility", withExtension: "json", subdirectory: "Compatibility")
-            ?? launcherRoot.appendingPathComponent("Sources/Compatibility/compatibility.json")
     }
 
     static var fallbackProxyRepoDylib: URL {

@@ -10,13 +10,15 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
     case antigravityIDE
     case gemini
     case agy
+    case claudeCode
+    case codex
 
     var id: String { self.rawValue }
 
     var targetType: TargetType {
         switch self {
         case .antigravity, .antigravityIDE, .gemini: return .appBundle
-        case .agy: return .cliBinary
+        case .agy, .claudeCode, .codex: return .cliBinary
         }
     }
 
@@ -26,6 +28,8 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
         case .antigravityIDE: return "ANTIGRAVITY_IDE"
         case .gemini: return "GEMINI"
         case .agy: return "CLI"
+        case .claudeCode: return "CLAUDE_CODE"
+        case .codex: return "CODEX"
         }
     }
 
@@ -35,6 +39,8 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
         case .antigravityIDE: return "macwindow.badge.plus"
         case .gemini: return "sparkles"
         case .agy: return "terminal.fill"
+        case .claudeCode: return "hammer.fill"
+        case .codex: return "cube.fill"
         }
     }
 
@@ -44,6 +50,8 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
         case .antigravityIDE: return "Antigravity IDE"
         case .gemini: return "Gemini"
         case .agy: return "Agy CLI"
+        case .claudeCode: return "Claude Code"
+        case .codex: return "Codex"
         }
     }
 
@@ -52,7 +60,7 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
         case .antigravity: return "com.google.antigravity"
         case .antigravityIDE: return "com.google.antigravity-ide"
         case .gemini: return "com.google.GeminiMacOS"
-        case .agy: return ""
+        case .agy, .claudeCode, .codex: return ""
         }
     }
 
@@ -62,6 +70,8 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
         case .antigravityIDE: return "/Applications/Antigravity IDE.app"
         case .gemini: return "/Applications/Gemini.app"
         case .agy: return "~/.local/bin/agy"
+        case .claudeCode: return "~/.local/bin/claude"
+        case .codex: return "~/.local/bin/codex"
         }
     }
 
@@ -71,6 +81,8 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
         case .antigravityIDE: return "Antigravity IDE_Unlocked.app"
         case .gemini: return "Gemini_Unlocked.app"
         case .agy: return "agy"
+        case .claudeCode: return "claude"
+        case .codex: return "codex"
         }
     }
 
@@ -78,7 +90,7 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .antigravity, .antigravityIDE, .gemini:
             return ["--use-mock-keychain", "--password-store=basic"]
-        case .agy:
+        case .agy, .claudeCode, .codex:
             return []
         }
     }
@@ -90,7 +102,7 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
                 "ELECTRON_NO_UPDATER": "1",
                 "SUDisableAutomaticChecks": "YES"
             ]
-        case .gemini, .agy:
+        case .gemini, .agy, .claudeCode, .codex:
             return [:]
         }
     }
@@ -102,6 +114,8 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
         case .antigravityIDE: return "Electron"
         case .gemini: return "Gemini"
         case .agy: return "agy"
+        case .claudeCode: return "claude"
+        case .codex: return "codex"
         }
     }
 
@@ -119,7 +133,7 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
             return [
                 "com.google.antigravity-ide.helper"
             ]
-        case .gemini, .agy:
+        case .gemini, .agy, .claudeCode, .codex:
             return []
         }
     }
@@ -129,7 +143,7 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
     /// Arguments to pass to the CLI binary to get its version string
     var cliVersionArgs: [String] {
         switch self {
-        case .agy: return ["--version"]
+        case .agy, .claudeCode, .codex: return ["--version"]
         default: return []
         }
     }
@@ -138,6 +152,8 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
     var cliRealBinaryName: String {
         switch self {
         case .agy: return "agy-real"
+        case .claudeCode: return "claude-real"
+        case .codex: return "codex-real"
         default: return ""
         }
     }
@@ -146,6 +162,8 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
     var cliPatchedDirRelativePath: String {
         switch self {
         case .agy: return ".antigravity/antigravity/bin"
+        case .claudeCode: return ".antigravity/claude/bin"
+        case .codex: return ".antigravity/codex/bin"
         default: return ""
         }
     }

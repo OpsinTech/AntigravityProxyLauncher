@@ -38,10 +38,10 @@ struct QuotaView: View {
                             .scaleEffect(1.5)
                         Text(authViewModel.statusMessage ?? "登录中...")
                             .foregroundStyle(.secondary)
-                        Button("取消登录") {
-                            authViewModel.cancelLogin()
+                        Button(action: { authViewModel.cancelLogin() }) {
+                            ButtonLabel(icon: "xmark", text: "取消登录")
                         }
-                        .buttonStyle(.bordered)
+                        .secondaryActionStyle()
                         Spacer()
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -281,10 +281,10 @@ struct QuotaView: View {
 
             HStack(spacing: 10) {
                 if needsOAuthSetup {
-                    Button("去设置") {
-                        appState.selectedTab = .settings
+                    Button(action: { appState.selectedTab = .settings }) {
+                        ButtonLabel(icon: "gearshape", text: "去设置")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .secondaryActionStyle()
 
                     Button("已保存，去登录") {
                         authViewModel.login()
@@ -365,16 +365,16 @@ struct QuotaView: View {
     private var controlBar: some View {
         VStack(spacing: 8) {
             HStack(spacing: 12) {
-                Button("刷新当前账户") {
-                    quotaViewModel.refreshCurrentAccount()
+                Button(action: { quotaViewModel.refreshCurrentAccount() }) {
+                    ButtonLabel(icon: "arrow.triangle.2.circlepath", text: "刷新当前账户")
                 }
-                .buttonStyle(.borderedProminent)
+                .primaryActionStyle()
                 .disabled(quotaViewModel.uiStatus == .refreshing || authViewModel.accounts.isEmpty)
 
-                Button("刷新全部账户") {
-                    quotaViewModel.refreshAllAccounts()
+                Button(action: { quotaViewModel.refreshAllAccounts() }) {
+                    ButtonLabel(icon: "arrow.triangle.2.circlepath", text: "刷新全部")
                 }
-                .buttonStyle(.bordered)
+                .secondaryActionStyle()
                 .disabled(quotaViewModel.uiStatus == .refreshing || authViewModel.accounts.isEmpty)
 
                 Spacer()
@@ -541,10 +541,10 @@ struct QuotaView: View {
                 .multilineTextAlignment(.center)
 
             if !actionTitle.isEmpty {
-                Button(actionTitle) {
-                    action()
+                Button(action: { action() }) {
+                    ButtonLabel(icon: "arrow.triangle.2.circlepath", text: actionTitle)
                 }
-                .buttonStyle(.borderedProminent)
+                .primaryActionStyle()
             }
 
             Spacer()

@@ -158,8 +158,6 @@ public:
     }
     AddCandidate("config.json");
     AddCandidate("proxy_config.json");
-    AddCandidate("/tmp/config.json");
-    AddCandidate("/tmp/proxy_config.json");
 
     std::ifstream f;
     std::string loadedPath;

@@ -72,10 +72,6 @@ struct PatchVerificationService {
             .appendingPathComponent("Contents/Resources/libAntigravityTun.dylib")
             .path
 
-        let configPath = appURL
-            .appendingPathComponent("Contents/Resources/proxy_config.json")
-            .path
-
         guard FileManager.default.fileExists(atPath: executablePath) else {
             throw PatchVerificationError.executableMissing(executablePath)
         }
@@ -84,12 +80,8 @@ struct PatchVerificationService {
             throw PatchVerificationError.dylibMissing(dylibPath)
         }
 
-        guard FileManager.default.fileExists(atPath: configPath) else {
-            throw PatchVerificationError.configMissing(configPath)
-        }
-
         let expectedDylibPath = "@executable_path/../Resources/libAntigravityTun.dylib"
-        let expectedConfigPath = "@executable_path/../Resources/proxy_config.json"
+        let expectedConfigPath = FileSystemPaths.userProxyConfigFile.path
 
         guard let lsEnvironment = info["LSEnvironment"] as? [String: String],
               lsEnvironment["DYLD_INSERT_LIBRARIES"] == expectedDylibPath,
@@ -108,9 +100,7 @@ struct PatchVerificationService {
             let helperReady = helperApps.contains { helper in
                 let helperResources = helper.appendingPathComponent("Contents/Resources", isDirectory: true)
                 let helperDylib = helperResources.appendingPathComponent("libAntigravityTun.dylib").path
-                let helperConfig = helperResources.appendingPathComponent("proxy_config.json").path
                 return FileManager.default.fileExists(atPath: helperDylib)
-                    && FileManager.default.fileExists(atPath: helperConfig)
             }
 
             if !helperReady {
@@ -160,7 +150,6 @@ struct PatchVerificationService {
         let wrapper = FileSystemPaths.patchedCLIWrapper
         let realBinary = FileSystemPaths.patchedCLIRealBinary
         let dylib = FileSystemPaths.patchedCLIDylib
-        let config = FileSystemPaths.patchedCLIConfig
         let fm = FileManager.default
 
         guard fm.fileExists(atPath: wrapper.path) else {
@@ -172,10 +161,6 @@ struct PatchVerificationService {
         guard fm.fileExists(atPath: dylib.path) else {
             throw PatchVerificationError.dylibMissing(dylib.path)
         }
-        guard fm.fileExists(atPath: config.path) else {
-            throw PatchVerificationError.configMissing(config.path)
-        }
-
         // Verify wrapper script contains required env vars
         guard let content = try? String(contentsOf: wrapper, encoding: .utf8),
               content.contains("DYLD_INSERT_LIBRARIES"),

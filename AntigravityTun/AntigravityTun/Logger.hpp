@@ -1,4 +1,6 @@
 #pragma once
+#include <sys/stat.h>
+#include <pwd.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -58,9 +60,11 @@ public:
     }
 
     if (logPath.empty()) {
-      // 默认路径，带上 pid 避免多进程冲突
-      char buf[256];
-      snprintf(buf, sizeof(buf), "/tmp/antigravity_proxy.%d.log", getpid());
+      // 默认路径到 ~/.config/antigravity，避免沙箱 /tmp 权限问题
+      const char *home = getenv("HOME");
+      if (!home) home = "/tmp"; // fallback
+      char buf[512];
+      snprintf(buf, sizeof(buf), "%s/.config/antigravity/antigravity_proxy.%d.log", home, getpid());
       logPath = buf;
     }
     
@@ -150,6 +154,21 @@ public:
   static void Info(const std::string &msg) { Log(LogLevel::Info, msg); }
   static void Warn(const std::string &msg) { Log(LogLevel::Warn, msg); }
   static void Error(const std::string &msg) { Log(LogLevel::Error, msg); }
+
+  /// 返回 ~/.config/antigravity/<name> 的完整路径（沙箱安全，自动 mkdir）
+  static std::string LogPath(const std::string &name) {
+    std::string home;
+    const char *envHome = getenv("HOME");
+    if (envHome) {
+      home = envHome;
+    } else {
+      struct passwd *pw = getpwuid(getuid());
+      if (pw) home = pw->pw_dir;
+    }
+    std::string dir = home + "/.config/antigravity";
+    mkdir(dir.c_str(), 0755);
+    return dir + "/" + name;
+  }
 
 private:
   static const char *LevelToString(LogLevel level) {

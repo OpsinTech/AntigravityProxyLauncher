@@ -21,8 +21,11 @@ import (
 )
 
 func main() {
+	// Ensure data dir exists (may be needed before logging writes)
+	_ = os.MkdirAll(os.Getenv("HOME") + "/.config/antigravity", 0755)
+
 	// Setup logging with rotation: max 10 MB, keep one backup
-	log.SetOutput(io.MultiWriter(openLogFile("/tmp/mitm_proxy.log"), os.Stderr))
+	log.SetOutput(io.MultiWriter(openLogFile(os.Getenv("HOME") + "/.config/antigravity/mitm_proxy.log"), os.Stderr))
 	log.Println("=== MITM Proxy Starting ===")
 
 	_ = godotenv.Load()
@@ -99,7 +102,7 @@ func main() {
 	// Export goproxy CA certificate to absolute paths
 	goproxyCA := os.Getenv("GOPROXY_CA_PATH")
 	if goproxyCA == "" {
-		goproxyCA = "/tmp/goproxy_ca.pem"
+		goproxyCA = os.Getenv("HOME") + "/.config/antigravity/goproxy_ca.pem"
 	}
 	os.WriteFile(goproxyCA, goproxy.CA_CERT, 0644)
 	log.Printf("[MITM] CA certificate exported to %s", goproxyCA)
