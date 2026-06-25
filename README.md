@@ -1,4 +1,4 @@
-# Antigravity Proxy Launcher (v2.5.0)
+# Antigravity Proxy Launcher
 
 让 Antigravity / Gemini 桌面应用走自定义代理，支持 AI 模型 API 跨厂商转译。
 
