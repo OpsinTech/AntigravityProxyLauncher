@@ -1,8 +1,6 @@
 import Foundation
 
 struct AppSettings: Codable, Equatable {
-    var quotaAutoRefreshEnabled: Bool
-    var quotaPollingIntervalSeconds: Int
     var googleOAuthClientID: String
     var googleOAuthClientSecret: String
     var releaseFeedURL: String
@@ -12,8 +10,6 @@ struct AppSettings: Codable, Equatable {
     var githubToken: String
 
     static let `default` = AppSettings(
-        quotaAutoRefreshEnabled: false,
-        quotaPollingIntervalSeconds: 60,
         googleOAuthClientID: "",
         googleOAuthClientSecret: "",
         releaseFeedURL: "OpsinTech/AntigravityProxyLauncher",
@@ -24,8 +20,6 @@ struct AppSettings: Codable, Equatable {
     )
 
     enum CodingKeys: String, CodingKey {
-        case quotaAutoRefreshEnabled
-        case quotaPollingIntervalSeconds
         case googleOAuthClientID
         case googleOAuthClientSecret
         case releaseFeedURL
@@ -36,8 +30,6 @@ struct AppSettings: Codable, Equatable {
     }
 
     init(
-        quotaAutoRefreshEnabled: Bool,
-        quotaPollingIntervalSeconds: Int,
         googleOAuthClientID: String,
         googleOAuthClientSecret: String,
         releaseFeedURL: String,
@@ -46,8 +38,6 @@ struct AppSettings: Codable, Equatable {
         hideDockIcon: Bool,
         githubToken: String
     ) {
-        self.quotaAutoRefreshEnabled = quotaAutoRefreshEnabled
-        self.quotaPollingIntervalSeconds = quotaPollingIntervalSeconds
         self.googleOAuthClientID = googleOAuthClientID
         self.googleOAuthClientSecret = googleOAuthClientSecret
         self.releaseFeedURL = releaseFeedURL
@@ -59,8 +49,6 @@ struct AppSettings: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        quotaAutoRefreshEnabled = try container.decodeIfPresent(Bool.self, forKey: .quotaAutoRefreshEnabled) ?? false
-        quotaPollingIntervalSeconds = max(5, try container.decodeIfPresent(Int.self, forKey: .quotaPollingIntervalSeconds) ?? 60)
         googleOAuthClientID = try container.decodeIfPresent(String.self, forKey: .googleOAuthClientID) ?? ""
         googleOAuthClientSecret = try container.decodeIfPresent(String.self, forKey: .googleOAuthClientSecret) ?? ""
         releaseFeedURL = try container.decodeIfPresent(String.self, forKey: .releaseFeedURL) ?? "OpsinTech/AntigravityProxyLauncher"

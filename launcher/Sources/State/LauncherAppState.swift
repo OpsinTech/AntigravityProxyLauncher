@@ -5,7 +5,6 @@ enum LauncherTab: Hashable {
     case overview
     case proxySettings
     case modelRouting
-    case quota
     case diagnostics
     case settings
 }
@@ -45,7 +44,6 @@ final class LauncherAppState: ObservableObject {
     @Published var settingsDraft: AppSettings = .default
     @Published var settingsStatusMessage: String?
     @Published var settingsErrorMessage: String?
-    @Published var quotaDiagnostics: [String: String] = [:]
     @Published var launcherVersionText: String = LauncherAppState.resolveLauncherVersion()
     @Published var releaseUpdateInfo: ReleaseUpdateInfo?
     @Published var releaseUpdateStatusMessage: String?
@@ -326,11 +324,6 @@ final class LauncherAppState: ObservableObject {
     }
 
 
-    func updateQuotaDiagnostics(_ diagnostics: [String: String]) {
-        if quotaDiagnostics != diagnostics {
-            quotaDiagnostics = diagnostics
-        }
-    }
 
     func loadProxyConfig() {
         do {
@@ -424,7 +417,6 @@ final class LauncherAppState: ObservableObject {
 
     func saveSettings() {
         do {
-            settingsDraft.quotaPollingIntervalSeconds = max(5, settingsDraft.quotaPollingIntervalSeconds)
             settingsDraft.googleOAuthClientID = settingsDraft.googleOAuthClientID
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             settingsDraft.googleOAuthClientSecret = settingsDraft.googleOAuthClientSecret

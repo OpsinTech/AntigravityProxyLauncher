@@ -6,7 +6,6 @@ import Darwin
 struct AntigravityProxyLauncherApp: App {
     @StateObject private var appState = LauncherAppState()
     @StateObject private var authViewModel = AuthViewModel()
-    @StateObject private var quotaViewModel = QuotaViewModel()
 
     init() {
         do {
@@ -66,7 +65,6 @@ struct AntigravityProxyLauncherApp: App {
             HomeView()
                 .environmentObject(appState)
                 .environmentObject(authViewModel)
-                .environmentObject(quotaViewModel)
                 .frame(minWidth: 820, minHeight: 560)
         }
 
@@ -74,7 +72,6 @@ struct AntigravityProxyLauncherApp: App {
             menuBarContent
                 .environmentObject(appState)
                 .environmentObject(authViewModel)
-                .environmentObject(quotaViewModel)
         } label: {
             menuBarIcon
         }

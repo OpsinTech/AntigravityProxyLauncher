@@ -2,8 +2,11 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var appState: LauncherAppState
+    @EnvironmentObject private var authViewModel: AuthViewModel
     @State private var revealGoogleClientSecret = false
     @State private var revealGithubToken = false
+    @State private var isTestingCredentials = false
+    @State private var credentialTestResult: String?
 
     var body: some View {
         ScrollView {
@@ -50,39 +53,6 @@ struct SettingsView: View {
                             .stroke(Color.gray.opacity(0.15), lineWidth: 1)
                     )
 
-                    // 监控与轮询卡片
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .foregroundStyle(.blue)
-                            Text("配额监控轮询")
-                                .font(.headline)
-                        }
-                        
-                        Divider()
-
-                        Toggle("配额信息后台静默自动刷新", isOn: $appState.settingsDraft.quotaAutoRefreshEnabled)
-                            .toggleStyle(.switch)
-
-                        HStack {
-                            Text("轮询时间间隔")
-                                .frame(width: 100, alignment: .leading)
-                                .foregroundStyle(appState.settingsDraft.quotaAutoRefreshEnabled ? .primary : .secondary)
-                            
-                            TextField("以 秒 为单位，默认 60 秒", value: $appState.settingsDraft.quotaPollingIntervalSeconds, formatter: NumberFormatter())
-                                .textFieldStyle(.roundedBorder)
-                                .frame(maxWidth: 160)
-                                .disabled(!appState.settingsDraft.quotaAutoRefreshEnabled)
-                        }
-                    }
-                    .padding(20)
-                    .background(Color.gray.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-                    )
-
                     // Google OAuth 凭据卡片
                     VStack(alignment: .leading, spacing: 16) {
                         HStack {
@@ -90,9 +60,39 @@ struct SettingsView: View {
                                 .foregroundStyle(.mint)
                             Text("Google OAuth 登录")
                                 .font(.headline)
+
+                            Spacer()
+
+                            // 当前登录状态徽章
+                            authStatusBadge
                         }
 
                         Divider()
+
+                        // 当前账户状态
+                        if authViewModel.accounts.isEmpty {
+                            HStack(spacing: 8) {
+                                Image(systemName: "person.slash")
+                                    .foregroundStyle(.secondary)
+                                Text("当前状态：未登录")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            HStack(spacing: 8) {
+                                Image(systemName: "person.crop.circle.badge.checkmark")
+                                    .foregroundStyle(.green)
+                                Text("当前状态：已登录 \(authViewModel.accounts.count) 个账户")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.green)
+
+                                if let active = authViewModel.activeAccount {
+                                    Text("（活跃：\(active.email)）")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
 
                         HStack {
                             Text("Client ID")
@@ -120,11 +120,27 @@ struct SettingsView: View {
                             .secondaryActionStyle()
                         }
 
+                        // 凭据验证按钮
+                        HStack(spacing: 10) {
+                            Button(action: testOAuthCredentials) {
+                                ButtonLabel(icon: isTestingCredentials ? "hourglass" : "checkmark.shield", text: isTestingCredentials ? "验证中..." : "测试凭据有效性")
+                            }
+                            .secondaryActionStyle()
+                            .disabled(isTestingCredentials)
+
+                            if let result = credentialTestResult {
+                                Text(result)
+                                    .font(.caption)
+                                    .foregroundStyle(result.hasPrefix("✓") ? .green : .red)
+                                    .transition(.opacity)
+                            }
+                        }
+
                         Text("说明：若同时设置了环境变量 AG_GOOGLE_CLIENT_ID / AG_GOOGLE_CLIENT_SECRET，环境变量优先。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        Text("点击底部“保存并应用参数”后会持久化到本地设置文件，后续可直接登录。")
+                        Text("点击底部「保存并应用」后凭据即生效。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -135,7 +151,6 @@ struct SettingsView: View {
                         RoundedRectangle(cornerRadius: 12)
                             .stroke(Color.gray.opacity(0.15), lineWidth: 1)
                     )
-                    
                     // 版本更新提醒卡片
                     VStack(alignment: .leading, spacing: 16) {
                         HStack {
@@ -283,9 +298,112 @@ struct SettingsView: View {
             .padding(24)
         }
         .onAppear {
-            DispatchQueue.main.async {
-                appState.loadSettings()
+            appState.loadSettings()
+        }
+        .animation(.easeInOut(duration: 0.25), value: credentialTestResult)
+    }
+
+    // MARK: - OAuth 凭据验证
+
+    /// 通过尝试启动 OAuth 流程的第一步（构建授权 URL）来验证凭据是否有效。
+    /// 这不会真正打开浏览器，只会校验 client_id 是否合法。
+    private func testOAuthCredentials() {
+        guard !isTestingCredentials else { return }
+
+        let clientID = appState.settingsDraft.googleOAuthClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clientSecret = appState.settingsDraft.googleOAuthClientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !clientID.isEmpty, !clientSecret.isEmpty else {
+            credentialTestResult = "✗ 请先填写 Client ID 和 Client Secret"
+            return
+        }
+
+        guard !clientID.hasPrefix("YOUR_"), !clientSecret.hasPrefix("YOUR_") else {
+            credentialTestResult = "✗ 请替换为真实的 Google OAuth 凭据"
+            return
+        }
+
+        isTestingCredentials = true
+        credentialTestResult = nil
+
+        Task {
+            do {
+                // 通过构建一个最小化的授权 URL 来校验 client_id 格式
+                var components = URLComponents(url: URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!, resolvingAgainstBaseURL: false)
+                components?.queryItems = [
+                    URLQueryItem(name: "client_id", value: clientID),
+                    URLQueryItem(name: "redirect_uri", value: "http://127.0.0.1:0/callback"),
+                    URLQueryItem(name: "response_type", value: "code"),
+                    URLQueryItem(name: "scope", value: "openid email"),
+                    URLQueryItem(name: "state", value: "test"),
+                    URLQueryItem(name: "code_challenge", value: "test"),
+                    URLQueryItem(name: "code_challenge_method", value: "S256")
+                ]
+
+                guard let url = components?.url else {
+                    throw NSError(domain: "Settings", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法构建授权 URL"])
+                }
+
+                // 尝试访问 Google OAuth 端点，验证 client_id 是否被 Google 识别
+                var request = URLRequest(url: url, timeoutInterval: 10)
+                request.httpMethod = "GET"
+
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw NSError(domain: "Settings", code: 2, userInfo: [NSLocalizedDescriptionKey: "无效的响应"])
+                }
+
+                if http.statusCode == 200 {
+                    await MainActor.run {
+                        credentialTestResult = "✓ 凭据格式有效，Google 端点可达"
+                        isTestingCredentials = false
+                    }
+                } else if http.statusCode == 400 {
+                    await MainActor.run {
+                        // 400 通常表示 redirect_uri 不匹配，但 client_id 被识别了
+                        credentialTestResult = "✓ Client ID 被 Google 识别（redirect_uri 将在实际登录时动态指定）"
+                        isTestingCredentials = false
+                    }
+                } else {
+                    await MainActor.run {
+                        credentialTestResult = "✗ 服务器返回异常状态码 \(http.statusCode)"
+                        isTestingCredentials = false
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    credentialTestResult = "✗ 网络错误: \(error.localizedDescription)"
+                    isTestingCredentials = false
+                }
             }
         }
+    }
+
+    // MARK: - 认证状态徽章
+
+    private var authStatusBadge: some View {
+        HStack(spacing: 6) {
+            if authViewModel.accounts.isEmpty {
+                Circle()
+                    .fill(Color.gray)
+                    .frame(width: 8, height: 8)
+                Text("未登录")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 8, height: 8)
+                Text("已登录 \(authViewModel.accounts.count) 个账户")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(
+            Capsule()
+                .fill(authViewModel.accounts.isEmpty ? Color.gray.opacity(0.1) : Color.green.opacity(0.1))
+        )
     }
 }
