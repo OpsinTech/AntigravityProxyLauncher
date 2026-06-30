@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +20,43 @@ import (
 	"github.com/joho/godotenv"
 	socks5proxy "golang.org/x/net/proxy"
 )
+
+// mitmHosts lists domains that should be MITM-intercepted for model routing.
+// All other domains (OAuth, accounts, etc.) are tunneled through transparently.
+var mitmHosts = []string{
+	"api.openai.com",
+	"api.anthropic.com",
+	"generativelanguage.googleapis.com",
+	"cloudcode-pa.googleapis.com",
+}
+
+// shouldMitm returns true if the host (host:port or bare host) should be MITM'd.
+func shouldMitm(host string) bool {
+	// Strip port if present
+	h := host
+	if colonIdx := strings.LastIndex(host, ":"); colonIdx != -1 {
+		h = host[:colonIdx]
+	}
+	for _, mh := range mitmHosts {
+		if h == mh || strings.HasSuffix(h, "."+mh) || strings.Contains(h, mh) {
+			return true
+		}
+	}
+	return false
+}
+
+// conditionalMitm returns a goproxy FuncHttpsHandler that only MITMs
+// hosts in the mitmHosts list, tunneling everything else transparently.
+func conditionalMitm() goproxy.FuncHttpsHandler {
+	return func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
+		if shouldMitm(host) {
+			log.Printf("[CONNECT] MITM intercept: %s", host)
+			return goproxy.MitmConnect, host
+		}
+		log.Printf("[CONNECT] Tunnel passthrough: %s", host)
+		return goproxy.OkConnect, host
+	}
+}
 
 func main() {
 	// Ensure data dir exists (may be needed before logging writes)
@@ -107,8 +145,8 @@ func main() {
 	os.WriteFile(goproxyCA, goproxy.CA_CERT, 0644)
 	log.Printf("[MITM] CA certificate exported to %s", goproxyCA)
 
-	// Handle CONNECT requests
-	proxy.OnRequest().HandleConnect(goproxy.AlwaysMitm)
+	// Handle CONNECT requests — only MITM AI API domains, tunnel everything else
+	proxy.OnRequest().HandleConnect(conditionalMitm())
 
 	// Log response errors
 	proxy.OnResponse().DoFunc(func(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
@@ -200,7 +238,10 @@ func runPassthroughOnly() {
 		proxy.Tr = socks5Transport
 	}
 
-	proxy.OnRequest().HandleConnect(goproxy.AlwaysMitm)
+	// Passthrough mode: tunnel all CONNECT requests without interception
+	proxy.OnRequest().HandleConnect(goproxy.FuncHttpsHandler(func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
+		return goproxy.OkConnect, host
+	}))
 
 	port := os.Getenv("MITM_PROXY_PORT")
 	if port == "" {

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CryptoKit
 import Foundation
 
@@ -45,11 +46,7 @@ extension GoogleOAuthError: LocalizedError {
     }
 }
 
-struct LoginFlowInfo: Equatable {
-    var state: LoginFlowState
-    var authURL: URL?
-    var errorMessage: String?
-}
+// LoginFlowInfo 已移至 Models/LoginFlowInfo.swift
 
 final class GoogleOAuthService {
     private struct OAuthErrorResponse: Decodable {
@@ -77,8 +74,31 @@ final class GoogleOAuthService {
     private let accountStore: AccountStoreService
     private let session: URLSession
 
-    private(set) var authState: AuthState = .notAuthenticated
-    private(set) var loginFlowInfo = LoginFlowInfo(state: .idle, authURL: nil, errorMessage: nil)
+    // MARK: - Reactive State (via Combine)
+    //
+    // 外部通过订阅 authStatePublisher / loginFlowInfoPublisher 获得响应式更新，
+    // 也可通过 getAuthStateInfo() / getLoginFlowInfo() 同步读取当前值。
+
+    private let authStateSubject: CurrentValueSubject<AuthState, Never> = .init(.notAuthenticated)
+    private let loginFlowInfoSubject: CurrentValueSubject<LoginFlowInfo, Never> = .init(.idle)
+
+    var authStatePublisher: AnyPublisher<AuthState, Never> {
+        authStateSubject.eraseToAnyPublisher()
+    }
+
+    var loginFlowInfoPublisher: AnyPublisher<LoginFlowInfo, Never> {
+        loginFlowInfoSubject.eraseToAnyPublisher()
+    }
+
+    private(set) var authState: AuthState {
+        get { authStateSubject.value }
+        set { authStateSubject.send(newValue) }
+    }
+
+    private(set) var loginFlowInfo: LoginFlowInfo {
+        get { loginFlowInfoSubject.value }
+        set { loginFlowInfoSubject.send(newValue) }
+    }
 
     init(
         callbackServer: OAuthCallbackServer = OAuthCallbackServer(),

@@ -17,11 +17,8 @@ struct HomeView: View {
                     NavigationLink(value: LauncherTab.modelRouting) {
                         Label("模型映射", systemImage: "arrow.triangle.branch")
                     }
-                    NavigationLink(value: LauncherTab.quota) {
-                        Label("配额管理", systemImage: "chart.bar.doc.horizontal")
-                    }
                 }
-                
+
                 Section("维护与设置") {
                     NavigationLink(value: LauncherTab.diagnostics) {
                         Label("系统诊断", systemImage: "stethoscope")
@@ -44,8 +41,6 @@ struct HomeView: View {
                 ProxySettingsView()
             case .modelRouting:
                 ModelRoutingView()
-            case .quota:
-                QuotaView()
             case .diagnostics:
                 DiagnosticsView()
             case .settings:
@@ -122,7 +117,6 @@ private struct SidebarVersionFooter: View {
 private struct OverviewView: View {
     @EnvironmentObject private var appState: LauncherAppState
     @EnvironmentObject private var authViewModel: AuthViewModel
-    @EnvironmentObject private var quotaViewModel: QuotaViewModel
 
     @State private var showCleanEnvironmentConfirm = false
     @State private var showClearLogsConfirm = false
@@ -558,14 +552,6 @@ private struct OverviewView: View {
         .onAppear {
             Task { @MainActor in
                 appState.refresh()
-                authViewModel.reloadState()
-                // Start quota polling if auto-refresh was enabled
-                if appState.settingsDraft.quotaAutoRefreshEnabled,
-                   authViewModel.activeAccount != nil,
-                   !quotaViewModel.isPolling {
-                    let interval = max(5, appState.settingsDraft.quotaPollingIntervalSeconds)
-                    quotaViewModel.startPolling(intervalSeconds: TimeInterval(interval))
-                }
             }
         }
 
@@ -647,195 +633,6 @@ private struct RotatingIcon: View {
                     degree = 360.0
                 }
             }
-    }
-}
-
-private struct QuotaSummaryCard: View {
-    @EnvironmentObject private var appState: LauncherAppState
-    @EnvironmentObject private var authViewModel: AuthViewModel
-    @EnvironmentObject private var quotaViewModel: QuotaViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Image(systemName: "chart.pie.fill")
-                    .foregroundStyle(.purple)
-                Text("配额监控")
-                    .font(.title3) // 标题由 headline 放大到 title3
-
-                Spacer()
-                
-                if appState.selectedApp != .gemini {
-                    if quotaViewModel.uiStatus == .refreshing {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .scaleEffect(0.7) // 稍微大一点点
-                    } else {
-                        // 同步配额移到卡片右上角 (顶右)！
-                        Button(action: {
-                            quotaViewModel.refreshCurrentAccount()
-                        }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.triangle.2.circlepath")
-                                    .font(.system(size: 10))
-                                Text("同步配额")
-                                    .font(.system(size: 12, weight: .bold)) // 字号由 10 放大到 12
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Color.blue.opacity(0.18))
-                            .foregroundStyle(.blue)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(appState.settingsDraft.quotaAutoRefreshEnabled || authViewModel.activeAccount == nil || quotaViewModel.uiStatus == .refreshing)
-                    }
-                }
-            }
-
-            if appState.selectedApp == .gemini {
-                VStack(spacing: 12) {
-                    Spacer()
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 28))
-                        .foregroundStyle(.purple.opacity(0.8))
-                    
-                    Text("Gemini 暂无配额监控")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.secondary)
-                    
-                    Text("该应用为独立应用通道，由 Google 官方直接托管资源，无需通过本地代理及配额通道监控。")
-                        .font(.footnote) // 稍微大一点以改善小字阅读体验
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 8)
-                        .lineSpacing(4)
-                    
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, minHeight: 180)
-            } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    InfoItem(
-                        icon: "network",
-                        title: "连接状态",
-                        value: quotaViewModel.statusText,
-                        valueColor: statusColor
-                    )
-
-                    InfoItem(
-                        icon: "person.circle",
-                        title: "当前授权账户",
-                        value: authViewModel.activeAccount?.email ?? "未登录",
-                        valueColor: authViewModel.activeAccount == nil ? .secondary : .primary
-                    )
-
-                    HStack(spacing: 32) {
-                        InfoItem(icon: "arrow.triangle.2.circlepath", title: "上次刷新", value: quotaViewModel.lastRefreshText)
-                        InfoItem(
-                            icon: quotaViewModel.isPolling ? "bolt.fill" : "bolt.slash.fill",
-                            title: "后台刷新",
-                            value: quotaViewModel.isPolling ? "已开启" : "已关闭",
-                            valueColor: quotaViewModel.isPolling ? .green : .secondary
-                        )
-                    }
-
-                    if let nextRefresh = quotaViewModel.nextAutoRefreshTime {
-                        InfoItem(icon: "clock.arrow.circlepath", title: "下次自动刷新", value: nextRefresh, valueColor: .secondary)
-                    }
-                }
-
-                if !quotaViewModel.lowestModels.isEmpty {
-                    Divider()
-                        .opacity(0.5)
-                        .padding(.vertical, 2)
-
-                    Text("资源余量预警 (最低配额)")
-                        .font(.subheadline) // 由 footnote 放大到 subheadline
-                        .foregroundStyle(.secondary)
-
-                    ForEach(quotaViewModel.lowestModels) { model in
-                        HStack(spacing: 8) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(model.displayName)
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
-                                if model.isExhausted {
-                                    Text("已耗尽")
-                                        .font(.footnote)
-                                        .foregroundStyle(.red)
-                                }
-                                if model.resetTime != nil {
-                                    Text(resetAndRemaining(model))
-                                        .font(.system(size: 9, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-
-                            Spacer()
-
-                            SegmentedQuotaIndicator(
-                                percentage: model.remainingPercentage,
-                                isExhausted: model.isExhausted,
-                                blockWidth: 8,
-                                blockHeight: 5,
-                                spacing: 1.5
-                            )
-
-                            Text("\(Int(model.remainingPercentage))%")
-                                .font(.system(.subheadline, design: .rounded))
-                                .bold()
-                                .foregroundStyle(model.isExhausted ? .red : (model.remainingPercentage < 20 ? .red : .primary))
-                        }
-                    }
-                }
-
-                if let error = quotaViewModel.errorMessage, !error.isEmpty {
-                    Text(error)
-                        .font(.footnote) // 稍微大一点
-                        .foregroundStyle(.red)
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(.thinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(.white.opacity(0.08), lineWidth: 1)
-        )
-    }
-
-    private var statusColor: Color {
-        switch quotaViewModel.uiStatus {
-        case .notLoggedIn:
-            return .secondary
-        case .hasCachedNotRefreshed:
-            return .blue
-        case .refreshing:
-            return .orange
-        case .refreshSuccess:
-            return .green
-        case .reauthRequired:
-            return .red
-        case .refreshFailed:
-            return .red
-        }
-    }
-
-    private func resetAndRemaining(_ model: ModelQuotaInfo) -> String {
-        guard let reset = model.resetTime else { return "" }
-        let remaining = max(0, reset.timeIntervalSinceNow)
-        let h = Int(remaining) / 3600
-        let m = (Int(remaining) % 3600) / 60
-        let s = Int(remaining) % 60
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return "重置于 \(formatter.string(from: reset))  剩余 \(String(format: "%02d:%02d:%02d", h, m, s))"
     }
 }
 

@@ -80,10 +80,53 @@ final class LaunchService {
         let proxyCfg = (try? ProxyConfigService().loadForEditor()) ?? .default
         env["ANTIGRAVITY_LOG_LEVEL"] = proxyCfg.logLevel
         // Trust MITM proxy's CA cert for Go binaries (SSL_CERT_FILE) and Node.js (NODE_EXTRA_CA_CERTS)
+        // SSL_CERT_FILE replaces the entire trust store for Go, so we must create a combined
+        // bundle that includes both system root CAs AND the goproxy CA. Using goproxy CA alone
+        // breaks TLS verification for all non-MITM traffic (e.g., OAuth to oauth2.googleapis.com).
         let caCertPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/antigravity/goproxy_ca.pem").path
-        env["SSL_CERT_FILE"] = caCertPath
+        let combinedCAPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/antigravity/combined_ca.pem").path
         env["NODE_EXTRA_CA_CERTS"] = caCertPath
+
+        // Regenerate combined CA only when needed (goproxy CA newer than combined, or combined missing)
+        let needRegen: Bool = {
+            guard let goproxyAttrs = try? FileManager.default.attributesOfItem(atPath: caCertPath),
+                  let goproxyMod = goproxyAttrs[.modificationDate] as? Date else { return true }
+            guard let combinedAttrs = try? FileManager.default.attributesOfItem(atPath: combinedCAPath),
+                  let combinedMod = combinedAttrs[.modificationDate] as? Date else { return true }
+            return goproxyMod > combinedMod
+        }()
+
+        if needRegen, let goproxyCA = try? String(contentsOfFile: caCertPath, encoding: .utf8) {
+            // Prefer /etc/ssl/cert.pem (available on Macs with Homebrew or Xcode CLT).
+            // Fall back to extracting system roots from the macOS keychain via security(1),
+            // which works on every Mac, clean or otherwise.
+            var combined: String?
+            if let systemCA = try? String(contentsOfFile: "/etc/ssl/cert.pem", encoding: .utf8) {
+                combined = systemCA + "\n" + goproxyCA
+            } else {
+                // Extract system roots from keychain (works on any macOS system)
+                let result = try? CommandRunner.run("/usr/bin/security", [
+                    "find-certificate", "-a", "-p",
+                    "/System/Library/Keychains/SystemRootCertificates.keychain"
+                ])
+                if let systemCerts = result?.stdout, !systemCerts.isEmpty {
+                    combined = systemCerts + "\n" + goproxyCA
+                }
+            }
+
+            if let combined = combined {
+                try? combined.write(toFile: combinedCAPath, atomically: true, encoding: .utf8)
+            }
+        }
+
+        // Prefer combined; fall back to goproxy-only if combined doesn't exist (first run race)
+        if FileManager.default.fileExists(atPath: combinedCAPath) {
+            env["SSL_CERT_FILE"] = combinedCAPath
+        } else {
+            env["SSL_CERT_FILE"] = caCertPath
+        }
 
         config.environment = env
         config.createsNewApplicationInstance = true
