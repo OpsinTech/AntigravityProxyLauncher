@@ -141,10 +141,13 @@ public:
       char line[512];
       int len = snprintf(line, sizeof(line), "[%s] [%d] %s %s\n",
                          buf, pid, levelStr, msg.c_str());
-      if (len > 0 && len < (int)sizeof(line)) {
-        std::lock_guard<std::mutex> lock(s_mtx);
-        if (s_file != nullptr) {
+      std::lock_guard<std::mutex> lock(s_mtx);
+      if (s_file != nullptr) {
+        if (len > 0 && len < (int)sizeof(line)) {
           fwrite(line, 1, len, s_file);
+        } else if (len >= (int)sizeof(line)) {
+          // Truncated — fall back to fprintf for the full message
+          fprintf(s_file, "[%s] [%d] %s %s\n", buf, pid, levelStr, msg.c_str());
         }
       }
     }

@@ -71,7 +71,11 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 
 	log.Printf("[Gemini] Detected model: %s, searching routing rules...", modelName)
 
-	rule := h.routingConfig.FindMatchingRule(modelName)
+	rule := h.routingConfig.FindMatchingRule(modelName, "google")
+	if rule == nil {
+		// Fallback: match rules without source_type restriction (wildcard)
+		rule = h.routingConfig.FindMatchingRule(modelName, "")
+	}
 	if rule == nil {
 		log.Printf("[Gemini] No routing rule matched for model=%s, passing through", modelName)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
@@ -124,6 +128,10 @@ func (h *GeminiHandler) handlePassthrough(r *http.Request, ctx *goproxy.ProxyCtx
 	if err != nil {
 		log.Printf("[Gemini] Passthrough error: %v", err)
 		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream error")
+	}
+	if resp == nil || resp.Body == nil {
+		log.Printf("[Gemini] Passthrough returned nil response or body")
+		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream returned empty response")
 	}
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
@@ -199,6 +207,11 @@ func (h *GeminiHandler) handleStreamRequest(
 		defer pw.Close()
 		defer cancel()
 
+		writePipe := func(data []byte) bool {
+			_, err := pw.Write(data)
+			return err == nil
+		}
+
 		for {
 			select {
 			case <-r.Context().Done():
@@ -222,8 +235,8 @@ func (h *GeminiHandler) handleStreamRequest(
 					log.Printf("[Gemini] Chunk translation failed: %v", err)
 					continue
 				}
-				if events != nil {
-					pw.Write(events)
+				if events != nil && !writePipe(events) {
+					return // client disconnected
 				}
 			}
 		}

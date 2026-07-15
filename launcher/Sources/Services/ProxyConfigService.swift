@@ -29,7 +29,17 @@ struct ProxyConfigService {
     func loadForEditor() throws -> ProxyConfig {
         // If global config exists, load it
         if FileManager.default.fileExists(atPath: FileSystemPaths.userProxyConfigFile.path) {
-            return try load(from: FileSystemPaths.userProxyConfigFile)
+            do {
+                return try load(from: FileSystemPaths.userProxyConfigFile)
+            } catch {
+                // Config file is corrupted — backup the broken file and regenerate defaults
+                let brokenPath = FileSystemPaths.userProxyConfigFile.path
+                let backupPath = brokenPath + ".corrupted." + ISO8601DateFormatter().string(from: Date())
+                    .replacingOccurrences(of: ":", with: "-")
+                try? FileManager.default.copyItem(atPath: brokenPath, toPath: backupPath)
+                try? FileManager.default.removeItem(atPath: brokenPath)
+                LauncherLogger.warn("proxy_config.json 已损坏，已备份至 \(backupPath)，将使用默认配置")
+            }
         }
 
         // First launch: try to migrate from old per-app paths (best-effort)

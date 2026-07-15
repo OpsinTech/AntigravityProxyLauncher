@@ -58,7 +58,7 @@ struct ModelRoutingView: View {
     // MARK: - Header
 
     private var headerSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.triangle.branch")
                     .font(.title2)
@@ -71,6 +71,36 @@ struct ModelRoutingView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 32)
+
+            // System selector — independent of which app is selected on the home page
+            HStack(spacing: 0) {
+                ForEach(["google", "anthropic"], id: \.self) { system in
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            appState.selectedRoutingSystem = system
+                        }
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: system == "google" ? "sparkles" : "hammer.fill")
+                                .font(.system(size: 12))
+                            Text(system == "google" ? "Google 体系" : "Anthropic 体系")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
+                        .background(appState.selectedRoutingSystem == system
+                            ? (system == "google" ? Color.blue.opacity(0.15) : Color.orange.opacity(0.15))
+                            : Color.gray.opacity(0.05))
+                        .foregroundStyle(appState.selectedRoutingSystem == system
+                            ? (system == "google" ? .blue : .orange)
+                            : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .background(Color.gray.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.leading, 32)
         }
     }
 
@@ -91,8 +121,24 @@ struct ModelRoutingView: View {
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 16) {
-                ForEach($appState.modelRoutingConfigDraft.providers) { $provider in
-                    ProviderCard(provider: $provider)
+                if appState.selectedRoutingSystem == "anthropic" {
+                    ForEach($appState.modelRoutingConfigAnthropic.providers) { $provider in
+                        ProviderCard(provider: $provider)
+                            .onChange(of: $provider.wrappedValue.enabled) { _ in appState.syncProvidersToOtherSystem() }
+                            .onChange(of: $provider.wrappedValue.apiEndpoint) { _ in appState.syncProvidersToOtherSystem() }
+                            .onChange(of: $provider.wrappedValue.apiKey) { _ in appState.syncProvidersToOtherSystem() }
+                            .onChange(of: $provider.wrappedValue.models) { _ in appState.syncProvidersToOtherSystem() }
+                            .onChange(of: $provider.wrappedValue.options) { _ in appState.syncProvidersToOtherSystem() }
+                    }
+                } else {
+                    ForEach($appState.modelRoutingConfigGoogle.providers) { $provider in
+                        ProviderCard(provider: $provider)
+                            .onChange(of: $provider.wrappedValue.enabled) { _ in appState.syncProvidersToOtherSystem() }
+                            .onChange(of: $provider.wrappedValue.apiEndpoint) { _ in appState.syncProvidersToOtherSystem() }
+                            .onChange(of: $provider.wrappedValue.apiKey) { _ in appState.syncProvidersToOtherSystem() }
+                            .onChange(of: $provider.wrappedValue.models) { _ in appState.syncProvidersToOtherSystem() }
+                            .onChange(of: $provider.wrappedValue.options) { _ in appState.syncProvidersToOtherSystem() }
+                    }
                 }
             }
         }
@@ -108,12 +154,23 @@ struct ModelRoutingView: View {
     // MARK: - Routing Rules Section
 
     private var routingRulesSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let currentRules = appState.currentModelRoutingConfig.routingRules
+
+        return VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.left.arrow.right")
                     .foregroundStyle(.orange)
                 Text("模型路由映射规则")
                     .font(.headline)
+
+                Text(appState.selectedRoutingSystem == "anthropic" ? "Anthropic 体系" : "Google 体系")
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(appState.selectedRoutingSystem == "anthropic" ? Color.orange.opacity(0.15) : Color.blue.opacity(0.15))
+                    .foregroundStyle(appState.selectedRoutingSystem == "anthropic" ? .orange : .blue)
+                    .clipShape(Capsule())
             }
             Divider()
 
@@ -144,13 +201,33 @@ struct ModelRoutingView: View {
             .padding(.horizontal, 8)
 
             VStack(alignment: .leading, spacing: 8) {
-                ForEach($appState.modelRoutingConfigDraft.routingRules) { $rule in
-                    RoutingRuleRow(rule: $rule, allProviders: appState.modelRoutingConfigDraft.providers,
-                                   onDelete: {
-                        appState.modelRoutingConfigDraft.routingRules.removeAll { $0.id == rule.id }
-                    })
-                    if rule.id != appState.modelRoutingConfigDraft.routingRules.last?.id {
-                        Divider().opacity(0.5)
+                if appState.selectedRoutingSystem == "anthropic" {
+                    ForEach($appState.modelRoutingConfigAnthropic.routingRules) { $rule in
+                        let ruleID = $rule.wrappedValue.id
+                        RoutingRuleRow(
+                            rule: $rule,
+                            allProviders: appState.modelRoutingConfigAnthropic.providers,
+                            onDelete: {
+                                appState.modelRoutingConfigAnthropic.routingRules.removeAll { $0.id == ruleID }
+                            }
+                        )
+                        if ruleID != currentRules.last?.id {
+                            Divider().opacity(0.5)
+                        }
+                    }
+                } else {
+                    ForEach($appState.modelRoutingConfigGoogle.routingRules) { $rule in
+                        let ruleID = $rule.wrappedValue.id
+                        RoutingRuleRow(
+                            rule: $rule,
+                            allProviders: appState.modelRoutingConfigGoogle.providers,
+                            onDelete: {
+                                appState.modelRoutingConfigGoogle.routingRules.removeAll { $0.id == ruleID }
+                            }
+                        )
+                        if ruleID != currentRules.last?.id {
+                            Divider().opacity(0.5)
+                        }
                     }
                 }
 
@@ -158,11 +235,16 @@ struct ModelRoutingView: View {
                     let newRule = ModelRoutingConfig.RoutingRule(
                         sourceModelPattern: "",
                         sourceDisplayName: "新规则",
+                        sourceType: appState.selectedRoutingSystem,
                         targetProviderID: nil,
                         targetModel: nil,
                         enabled: true
                     )
-                    appState.modelRoutingConfigDraft.routingRules.append(newRule)
+                    if appState.selectedRoutingSystem == "anthropic" {
+                        appState.modelRoutingConfigAnthropic.routingRules.append(newRule)
+                    } else {
+                        appState.modelRoutingConfigGoogle.routingRules.append(newRule)
+                    }
                 }) {
                     ButtonLabel(icon: "plus.circle.fill", text: "添加规则")
                 }
@@ -192,7 +274,12 @@ struct ModelRoutingView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
                 Button(action: {
-                    appState.modelRoutingConfigDraft = ModelRoutingConfig.default
+                    let sysDefault: ModelRoutingConfig = appState.selectedRoutingSystem == "anthropic" ? .defaultAnthropic : .defaultGoogle
+                    if appState.selectedRoutingSystem == "anthropic" {
+                        appState.modelRoutingConfigAnthropic = sysDefault
+                    } else {
+                        appState.modelRoutingConfigGoogle = sysDefault
+                    }
                     statusMessage = "已恢复默认映射规则，请点击保存并应用配置。"
                 }) {
                     ButtonLabel(icon: "arrow.counterclockwise", text: "恢复默认")
@@ -248,7 +335,7 @@ struct ModelRoutingView: View {
     // MARK: - Helpers
 
     private func saveConfig() {
-        appState.saveModelRoutingConfig()
+        appState.saveCurrentModelRoutingConfig()
 
         if let err = appState.modelRoutingErrorMessage {
             errorMessage = "保存失败: \(err)"
@@ -528,15 +615,31 @@ private struct SourceModel: Identifiable {
 }
 
 private enum SourceModels {
-    static let all: [SourceModel] = [
+    static let google: [SourceModel] = [
         .init(pattern: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6"),
         .init(pattern: "claude-opus-4-6", displayName: "Claude Opus 4.6"),
         .init(pattern: "gpt-oss-120b", displayName: "GPT OSS 120B"),
     ]
+    static let anthropic: [SourceModel] = [
+        .init(pattern: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6"),
+        .init(pattern: "claude-opus-4-6", displayName: "Claude Opus 4.6"),
+        .init(pattern: "claude-opus-4-8", displayName: "Claude Opus 4.8"),
+        .init(pattern: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5"),
+        .init(pattern: "claude-fable-5", displayName: "Claude Fable 5"),
+    ]
+
+    static func forSourceType(_ type: String?) -> [SourceModel] {
+        switch type {
+        case "google": return google
+        case "anthropic": return anthropic
+        default: return google + anthropic
+        }
+    }
 }
 
 private func sourceModelDisplayName(for pattern: String) -> String {
-    SourceModels.all.first(where: { $0.pattern == pattern })?.displayName ?? pattern
+    let all = SourceModels.forSourceType(nil)
+    return all.first(where: { $0.pattern == pattern })?.displayName ?? pattern
 }
 
 struct RoutingRuleRow: View {
@@ -553,7 +656,7 @@ struct RoutingRuleRow: View {
                     rule.sourceDisplayName = sourceModelDisplayName(for: newValue)
                 }
             )) {
-                ForEach(SourceModels.all, id: \.pattern) { m in
+                ForEach(SourceModels.forSourceType(rule.sourceType), id: \.pattern) { m in
                     Text(m.displayName).tag(m.pattern)
                 }
             }

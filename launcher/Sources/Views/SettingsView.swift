@@ -28,6 +28,108 @@ struct SettingsView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 20) {
+                    // License 卡片
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            Image(systemName: "key.fill")
+                                .foregroundStyle(.purple)
+                            Text("License")
+                                .font(.headline)
+                            Spacer()
+                            if let info = appState.licenseInfo {
+                                Circle()
+                                    .fill(info.isExpired ? Color.red : Color.green)
+                                    .frame(width: 8, height: 8)
+                                Text(info.isExpired ? "已过期" : "已激活")
+                                    .font(.caption)
+                                    .foregroundStyle(info.isExpired ? .red : .green)
+                            }
+                        }
+                        Divider()
+
+                        if let info = appState.licenseInfo {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text("方案:")
+                                        .foregroundStyle(.secondary)
+                                    Text(info.plan.capitalized)
+                                        .fontWeight(.medium)
+                                }
+                                HStack {
+                                    Text("状态:")
+                                        .foregroundStyle(.secondary)
+                                    Text(info.statusText)
+                                        .foregroundStyle(info.daysRemaining <= 7 ? .orange : .green)
+                                }
+                                HStack {
+                                    Text("到期:")
+                                        .foregroundStyle(.secondary)
+                                    Text(info.expiresAt, style: .date)
+                                }
+
+                                HStack(spacing: 12) {
+                                    Button("验证 License") {
+                                        appState.verifyLicense()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+
+                                    Button("移除 License", role: .destructive) {
+                                        appState.deactivateLicense()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("输入 License Key 激活 Pro 功能")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+
+                                HStack(spacing: 8) {
+                                    TextField("XXXX-XXXX-XXXX-XXXX", text: $appState.licenseKeyInput)
+                                        .textFieldStyle(.roundedBorder)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .frame(width: 200)
+
+                                    Button("激活") {
+                                        appState.activateLicense(key: appState.licenseKeyInput)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                    .disabled(appState.licenseKeyInput.isEmpty)
+                                }
+
+                                Button("获取 License") {
+                                    if let url = URL(string: "https://antigravity.yourdomain.com/pricing") {
+                                        NSWorkspace.shared.open(url)
+                                    }
+                                }
+                                .buttonStyle(.link)
+                                .controlSize(.small)
+                            }
+                        }
+
+                        if let msg = appState.licenseStatusMessage {
+                            Text(msg)
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        }
+                        if let err = appState.licenseErrorMessage {
+                            Text(err)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                    .padding(20)
+                    .background(Color.gray.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+                    )
+
                     // 外观卡片
                     VStack(alignment: .leading, spacing: 16) {
                         HStack {

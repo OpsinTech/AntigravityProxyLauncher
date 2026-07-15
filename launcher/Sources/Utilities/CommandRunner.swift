@@ -9,6 +9,7 @@ struct CommandResult {
 enum CommandRunnerError: Error {
     case executableNotFound(String)
     case nonZeroExit(CommandResult)
+    case commandFailed(tool: String, message: String)
 }
 
 extension CommandRunnerError: LocalizedError {
@@ -22,6 +23,8 @@ extension CommandRunnerError: LocalizedError {
                 return "命令执行失败，退出码: \(result.status)"
             }
             return "命令执行失败，退出码: \(result.status)，stderr: \(stderr)"
+        case .commandFailed(let tool, let message):
+            return "\(tool) 不可用: \(message)"
         }
     }
 }

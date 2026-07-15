@@ -33,6 +33,18 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    /// Source type for model routing categorization.
+    /// - "google": Google-ecosystem apps (Antigravity, Antigravity IDE, Gemini, Agy)
+    /// - "anthropic": Claude Code (Anthropic ecosystem)
+    /// - nil: not yet supported (Codex)
+    var sourceType: String? {
+        switch self {
+        case .claudeCode: return "anthropic"
+        case .codex: return nil
+        case .gemini, .antigravity, .antigravityIDE, .agy: return "google"
+        }
+    }
+
     var iconName: String {
         switch self {
         case .antigravity: return "gauge.with.needle"
@@ -136,6 +148,23 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
         case .gemini, .agy, .claudeCode, .codex:
             return []
         }
+    }
+
+    // MARK: - App categorization
+
+    /// All apps that are App Bundles (GUI apps)
+    static var allAppBundles: [TargetApp] {
+        allCases.filter { $0.targetType == .appBundle }
+    }
+
+    /// All apps that are CLI binaries
+    static var allCLIApps: [TargetApp] {
+        allCases.filter { $0.targetType == .cliBinary }
+    }
+
+    /// Apps that are currently supported (not coming soon)
+    static var supportedApps: [TargetApp] {
+        allCases.filter { $0.sourceType != nil }
     }
 
     // MARK: - CLI-specific properties

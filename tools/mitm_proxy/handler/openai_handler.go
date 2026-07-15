@@ -89,7 +89,11 @@ func (h *OpenAIHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	log.Printf("[OpenAI] Detected model: %s", modelDetect.Model)
 
 	// Find matching routing rule
-	rule := h.routingConfig.FindMatchingRule(modelDetect.Model)
+	rule := h.routingConfig.FindMatchingRule(modelDetect.Model, "openai")
+	if rule == nil {
+		// Fallback: match rules without source_type restriction (wildcard)
+		rule = h.routingConfig.FindMatchingRule(modelDetect.Model, "")
+	}
 	if rule == nil {
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
@@ -194,6 +198,11 @@ func (h *OpenAIHandler) handleStreamRequest(
 		defer pw.Close()
 		defer cancel()
 
+		writePipe := func(data []byte) bool {
+			_, err := pw.Write(data)
+			return err == nil
+		}
+
 		for {
 			select {
 			case <-r.Context().Done():
@@ -217,8 +226,8 @@ func (h *OpenAIHandler) handleStreamRequest(
 					log.Printf("[OpenAI] Chunk translation failed: %v", err)
 					continue
 				}
-				if events != nil {
-					pw.Write(events)
+				if events != nil && !writePipe(events) {
+					return // client disconnected
 				}
 			}
 		}

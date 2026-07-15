@@ -21,13 +21,25 @@ import (
 	socks5proxy "golang.org/x/net/proxy"
 )
 
-// mitmHosts lists domains that should be MITM-intercepted for model routing.
-// All other domains (OAuth, accounts, etc.) are tunneled through transparently.
-var mitmHosts = []string{
+// defaultMitmHosts lists domains that should be MITM-intercepted for model routing.
+// These can be overridden via the mitm_hosts field in proxy_config.json.
+var defaultMitmHosts = []string{
 	"api.openai.com",
 	"api.anthropic.com",
 	"generativelanguage.googleapis.com",
 	"cloudcode-pa.googleapis.com",
+}
+
+// mitmHosts is loaded from proxy_config.json at startup, falling back to defaults.
+var mitmHosts []string
+
+func loadMitmHosts() {
+	mitmHosts = defaultMitmHosts
+	hosts := config.LoadMitmHosts()
+	if len(hosts) > 0 {
+		mitmHosts = hosts
+		log.Printf("[MITM] Loaded %d custom MITM hosts from config", len(hosts))
+	}
 }
 
 // shouldMitm returns true if the host (host:port or bare host) should be MITM'd.
@@ -63,8 +75,24 @@ func main() {
 	_ = os.MkdirAll(os.Getenv("HOME") + "/.config/antigravity", 0755)
 
 	// Setup logging with rotation: max 10 MB, keep one backup
-	log.SetOutput(io.MultiWriter(openLogFile(os.Getenv("HOME") + "/.config/antigravity/mitm_proxy.log"), os.Stderr))
+	logFile := openLogFile(os.Getenv("HOME") + "/.config/antigravity/mitm_proxy.log")
+	if logFile != nil {
+		log.SetOutput(io.MultiWriter(logFile, os.Stderr))
+	} else {
+		log.SetOutput(os.Stderr)
+		log.Println("[Warning] Log file unavailable, logging to stderr only")
+	}
 	log.Println("=== MITM Proxy Starting ===")
+
+	// Load MITM hosts from config (with defaults)
+	loadMitmHosts()
+
+	// Check license before enabling model routing
+	if !config.IsLicenseValid() {
+		log.Println("[MITM] License invalid or expired, running in passthrough mode only")
+		runPassthroughOnly()
+		return
+	}
 
 	_ = godotenv.Load()
 
@@ -180,11 +208,13 @@ func main() {
 	}
 
 	// Create server with timeouts
+	// WriteTimeout=0 for SSE streams (AI responses can exceed 5 minutes).
+	// Per-request timeouts are handled by context.WithTimeout in handlers.
 	server := &http.Server{
 		Addr:         "0.0.0.0:" + port,
 		Handler:      proxy,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 300 * time.Second, // long timeout for SSE streams
+		WriteTimeout: 0, // SSE streams have no fixed duration
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -252,7 +282,7 @@ func runPassthroughOnly() {
 		Addr:         "0.0.0.0:" + port,
 		Handler:      proxy,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 300 * time.Second,
+		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,
 	}
 
