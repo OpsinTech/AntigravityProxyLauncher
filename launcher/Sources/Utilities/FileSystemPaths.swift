@@ -58,7 +58,20 @@ enum FileSystemPaths {
             .appendingPathComponent("antigravity_macos_proxy", isDirectory: true)
     }
 
-    static var activeApp: TargetApp = .antigravity
+    private static let _activeAppLock = NSLock()
+    private static var _activeApp: TargetApp = .antigravity
+    static var activeApp: TargetApp {
+        get {
+            _activeAppLock.lock()
+            defer { _activeAppLock.unlock() }
+            return _activeApp
+        }
+        set {
+            _activeAppLock.lock()
+            _activeApp = newValue
+            _activeAppLock.unlock()
+        }
+    }
 
     static var targetApp: URL {
         let path = activeApp.defaultPath
@@ -113,10 +126,22 @@ enum FileSystemPaths {
             .appendingPathComponent(".config/antigravity/proxy_config.json")
     }
 
-    /// 模型路由配置全局唯一，不随 activeApp 变化
+    /// 模型路由配置（合并文件，供 Go proxy 读取），不随 activeApp 变化
     static var userModelRoutingConfigFile: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/antigravity/model_routing.json")
+    }
+
+    /// Google 体系的模型映射配置
+    static var userModelRoutingConfigGoogleFile: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/antigravity/model_routing_google.json")
+    }
+
+    /// Anthropic 体系的模型映射配置
+    static var userModelRoutingConfigAnthropicFile: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/antigravity/model_routing_anthropic.json")
     }
 
     static let patchLogFile = FileManager.default.homeDirectoryForCurrentUser

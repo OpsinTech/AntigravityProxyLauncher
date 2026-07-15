@@ -13,6 +13,28 @@ struct SigningService {
                 throw CommandRunnerError.executableNotFound(tool)
             }
         }
+
+        // Verify ad-hoc signing capability (codesign --sign - should work without a certificate)
+        // Create a tiny temp file and attempt to sign it to catch common issues early
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("antigravity_signing_preflight_\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let testFile = tempDir.appendingPathComponent("test_sign")
+        try "test".write(to: testFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: testFile) }
+
+        do {
+            _ = try CommandRunner.run("/usr/bin/codesign", [
+                "--force", "--sign", "-", testFile.path
+            ])
+        } catch {
+            throw CommandRunnerError.commandFailed(
+                tool: "codesign",
+                message: "Ad-hoc 签名能力不可用，请确认 Xcode Command Line Tools 已安装。\(error.localizedDescription)"
+            )
+        }
     }
 
     func resignBundleInsideOut(

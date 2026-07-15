@@ -38,8 +38,10 @@ final class LauncherAppState: ObservableObject {
     @Published var configStatusMessage: String?
     @Published var configErrorMessage: String?
     @Published var modelRoutingErrorMessage: String?
-    @Published var modelRoutingConfigDraft: ModelRoutingConfig = .default
-    private var hasLoadedModelRoutingConfig = false
+    @Published var modelRoutingConfigGoogle: ModelRoutingConfig = .defaultGoogle
+    @Published var modelRoutingConfigAnthropic: ModelRoutingConfig = .defaultAnthropic
+    @Published var selectedRoutingSystem: String = "google"
+    private var hasLoadedModelRoutingConfigs = false
     private let modelRoutingService = ModelRoutingService()
     @Published var settingsDraft: AppSettings = .default
     @Published var settingsStatusMessage: String?
@@ -48,6 +50,11 @@ final class LauncherAppState: ObservableObject {
     @Published var releaseUpdateInfo: ReleaseUpdateInfo?
     @Published var releaseUpdateStatusMessage: String?
     @Published var releaseUpdateErrorMessage: String?
+    @Published var licenseInfo: LicenseInfo?
+    @Published var licenseStatusMessage: String?
+    @Published var licenseErrorMessage: String?
+    private let licenseService = LicenseService()
+    @Published var licenseKeyInput: String = ""
 
     @Published var allAppStatuses: [TargetApp: MenuBarAppStatus] = [:]
 
@@ -98,8 +105,9 @@ final class LauncherAppState: ObservableObject {
 
     func refresh() {
         loadProxyConfig()
-        loadModelRoutingConfig()
+        loadModelRoutingConfigs()
         loadSettings()
+        loadLicenseStatus()
         refreshAllAppStatuses()
 
         guard let app = appDetectionService.detectInstalledTargetApp() else {
@@ -145,7 +153,7 @@ final class LauncherAppState: ObservableObject {
         isRunningWorkflow = true
 
         Task {
-            // 修复前校验代理连通性
+            // 修复前预检查：代理连通性、磁盘空间、目标 App 占用
             let cfg = proxyConfigDraft.proxy
             let probeResult: ProxyProbeResult = await withCheckedContinuation { cont in
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -160,8 +168,42 @@ final class LauncherAppState: ObservableObject {
                 }
                 return
             }
+
+            // 检查磁盘空间（需要至少 2GB）
+            let diskCheckResult = await checkDiskSpace()
+            if !diskCheckResult.ok {
+                await MainActor.run {
+                    appendLog("修复终止: \(diskCheckResult.message)")
+                    status = .error(diskCheckResult.message)
+                    isRunningWorkflow = false
+                }
+                return
+            }
+
             await runWorkflow()
         }
+    }
+
+    private func checkDiskSpace() async -> (ok: Bool, message: String) {
+        let result = await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let home = FileManager.default.homeDirectoryForCurrentUser
+                    let values = try home.resourceValues(forKeys: [.volumeAvailableCapacityKey])
+                    if let freeBytes = values.volumeAvailableCapacity {
+                        let freeGB = Double(freeBytes) / 1_073_741_824.0
+                        if freeGB < 2.0 {
+                            cont.resume(returning: (false, "磁盘可用空间不足 (剩余 \(String(format: "%.1f", freeGB)) GB，需要至少 2 GB)"))
+                            return
+                        }
+                    }
+                    cont.resume(returning: (true, ""))
+                } catch {
+                    cont.resume(returning: (true, "")) // 无法检查时继续，不阻塞修复
+                }
+            }
+        }
+        return result
     }
 
     func launchPatchedAppOnly() {
@@ -178,9 +220,9 @@ final class LauncherAppState: ObservableObject {
                 await MainActor.run {
                     if isCLI {
                         if let output = cliOutput, !output.isEmpty {
-                            self.appendLog("agy 版本: \(output)")
+                            self.appendLog("\(self.selectedApp.displayName) 版本: \(output)")
                         }
-                        self.appendLog("验证通过：Agy CLI 代理注入已就绪，可在终端使用 agy 命令。")
+                        self.appendLog("验证通过：\(self.selectedApp.displayName) 代理注入已就绪，可在终端使用 \(self.selectedApp.executableName) 命令。")
                         self.status = .patchedReady
                     } else {
                         self.appendLog("启动成功！")
@@ -245,6 +287,30 @@ final class LauncherAppState: ObservableObject {
                 clearedTargets.append("修复日志")
             }
 
+            // Clean up dylib per-process log files (antigravity_proxy.{pid}.log)
+            let configDir = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/antigravity")
+            if let contents = try? fm.contentsOfDirectory(atPath: configDir.path) {
+                let dylibLogs = contents.filter { $0.hasPrefix("antigravity_proxy.") && $0.hasSuffix(".log") }
+                var removed = 0
+                for file in dylibLogs {
+                    let path = configDir.appendingPathComponent(file).path
+                    // Only remove logs from processes that are no longer running
+                    let pidStr = file
+                        .replacingOccurrences(of: "antigravity_proxy.", with: "")
+                        .replacingOccurrences(of: ".log", with: "")
+                    if let pid = Int32(pidStr), pid > 0 {
+                        if kill(pid, 0) != 0 {
+                            // Process not running, safe to delete
+                            try? fm.removeItem(atPath: path)
+                            removed += 1
+                        }
+                    }
+                }
+                if removed > 0 {
+                    clearedTargets.append("\(removed) 个 dylib 日志文件")
+                }
+            }
 
             if clearedTargets.isEmpty {
                 appendLog("日志已清理：未发现可删除的日志文件")
@@ -290,7 +356,7 @@ final class LauncherAppState: ObservableObject {
                                 try fm.removeItem(at: targetPath)
                             }
                             try fm.copyItem(at: URL(fileURLWithPath: backupPath), to: targetPath)
-                            report("已还原原始 agy 二进制: \(backupPath)")
+                            report("已还原原始 \(FileSystemPaths.activeApp.displayName) 二进制: \(backupPath)")
                         }
                     } else {
                         if fm.fileExists(atPath: FileSystemPaths.patchedApp.path) {
@@ -345,11 +411,13 @@ final class LauncherAppState: ObservableObject {
         }
     }
 
-    func loadModelRoutingConfig() {
+    func loadModelRoutingConfigs() {
         do {
-            modelRoutingConfigDraft = try modelRoutingService.load()
+            let (google, anthropic) = try modelRoutingService.loadBoth()
+            modelRoutingConfigGoogle = google
+            modelRoutingConfigAnthropic = anthropic
             modelRoutingErrorMessage = nil
-            hasLoadedModelRoutingConfig = true
+            hasLoadedModelRoutingConfigs = true
         } catch {
             modelRoutingErrorMessage = "加载模型映射配置失败: \(error.localizedDescription)"
             appendLog("加载模型映射配置失败: \(error.localizedDescription)")
@@ -357,19 +425,55 @@ final class LauncherAppState: ObservableObject {
     }
 
     func loadModelRoutingConfigIfNeeded() {
-        if !hasLoadedModelRoutingConfig {
-            loadModelRoutingConfig()
+        if !hasLoadedModelRoutingConfigs {
+            loadModelRoutingConfigs()
         }
     }
 
-    func saveModelRoutingConfig() {
+    /// Returns the config draft for the currently selected routing system.
+    var currentModelRoutingConfig: ModelRoutingConfig {
+        get {
+            selectedRoutingSystem == "anthropic" ? modelRoutingConfigAnthropic : modelRoutingConfigGoogle
+        }
+        set {
+            if selectedRoutingSystem == "anthropic" {
+                modelRoutingConfigAnthropic = newValue
+            } else {
+                modelRoutingConfigGoogle = newValue
+            }
+        }
+    }
+
+    /// Saves the currently selected system's config and regenerates the merged proxy file.
+    func saveCurrentModelRoutingConfig() {
+        let config = currentModelRoutingConfig
         do {
-            try modelRoutingService.save(modelRoutingConfigDraft)
+            try modelRoutingService.save(config, for: selectedRoutingSystem)
+            // Reload the other config to keep in-memory state consistent
+            let otherSystem = selectedRoutingSystem == "google" ? "anthropic" : "google"
+            if let other = try? modelRoutingService.load(for: otherSystem) {
+                if otherSystem == "google" {
+                    modelRoutingConfigGoogle = other
+                } else {
+                    modelRoutingConfigAnthropic = other
+                }
+            }
             modelRoutingErrorMessage = nil
-            appendLog("模型映射配置已保存。")
+            appendLog("模型映射配置（\(selectedRoutingSystem == "anthropic" ? "Anthropic" : "Google") 体系）已保存。")
         } catch {
             modelRoutingErrorMessage = "保存模型映射配置失败: \(error.localizedDescription)"
             appendLog("保存模型映射配置失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// Synchronizes providers from the current system to the other system.
+    /// Called whenever providers are modified in one ecosystem's view.
+    func syncProvidersToOtherSystem() {
+        let current = currentModelRoutingConfig
+        if selectedRoutingSystem == "google" {
+            modelRoutingConfigAnthropic.providers = current.providers
+        } else {
+            modelRoutingConfigGoogle.providers = current.providers
         }
     }
 
@@ -711,7 +815,7 @@ final class LauncherAppState: ObservableObject {
         return (String(parts[0]), String(parts[1]))
     }
 
-    private static func resolveLauncherVersion() -> String {
+    static func resolveLauncherVersion() -> String {
         // Try bundled version.txt first (release builds)
         if let url = Bundle.main.url(forResource: "version", withExtension: "txt"),
            let content = try? String(contentsOf: url, encoding: .utf8) {
@@ -734,5 +838,59 @@ final class LauncherAppState: ObservableObject {
            !build.isEmpty { return build }
 
         return "0.1.0-dev"
+    }
+
+    // MARK: - License management
+
+    func loadLicenseStatus() {
+        if let local = try? licenseService.loadLocal() {
+            licenseInfo = local
+            licenseErrorMessage = nil
+        }
+    }
+
+    func activateLicense(key: String) {
+        licenseStatusMessage = "正在验证 License..."
+        licenseErrorMessage = nil
+
+        Task {
+            do {
+                let info = try await licenseService.activate(key: key)
+                await MainActor.run {
+                    licenseInfo = info
+                    licenseStatusMessage = "License 激活成功！\(info.statusText)"
+                    licenseErrorMessage = nil
+                    appendLog("License 已激活: \(info.plan), 过期时间 \(info.expiresAt)")
+                }
+            } catch {
+                await MainActor.run {
+                    licenseErrorMessage = error.localizedDescription
+                    licenseStatusMessage = nil
+                }
+            }
+        }
+    }
+
+    func verifyLicense() {
+        Task {
+            do {
+                if let info = try await licenseService.verify() {
+                    await MainActor.run {
+                        licenseInfo = info
+                        licenseErrorMessage = nil
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    licenseErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func deactivateLicense() {
+        licenseService.clearLocal()
+        licenseInfo = nil
+        licenseStatusMessage = "License 已移除"
     }
 }

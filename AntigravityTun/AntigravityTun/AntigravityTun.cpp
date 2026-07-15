@@ -54,6 +54,12 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
   }();
   (void)init;
 
+  // License check — if expired, bypass all interception (passthrough mode)
+  static bool licenseValid = Core::CheckLicense();
+  if (!licenseValid) {
+    return connect(sockfd, addr, addrlen);
+  }
+
   uint32_t ip = 0;
   uint16_t port = 0;
   bool is_ipv4 = false;
@@ -275,7 +281,7 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
             std::lock_guard<std::mutex> lock(g_sockfd_map_mtx);
             struct sockaddr_storage storage;
             memset(&storage, 0, sizeof(storage));
-            memcpy(&storage, addr, addrlen);
+            memcpy(&storage, addr, std::min(addrlen, (socklen_t)sizeof(storage)));
             g_sockfd_map[sockfd] = storage;
             g_sockfd_len_map[sockfd] = addrlen;
           }

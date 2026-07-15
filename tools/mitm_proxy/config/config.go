@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/provider"
 )
@@ -24,6 +25,7 @@ type ProviderEntry struct {
 // RoutingRule maps a source model to a target provider+model.
 type RoutingRule struct {
 	SourceModelPattern string `json:"source_model_pattern"`
+	SourceType         string `json:"source_type,omitempty"`
 	TargetModel        string `json:"target_model"`
 	TargetProviderID   string `json:"target_provider_id"`
 	Enabled            bool   `json:"enabled"`
@@ -43,29 +45,55 @@ type RoutingConfig struct {
 	Providers []ProviderEntry
 }
 
-// FindMatchingRule finds the first enabled rule matching the given model name.
+// FindMatchingRule finds the first enabled rule matching the given model name and optional source type.
+// If sourceType is non-empty, only rules with a matching source_type (or empty source_type as wildcard) are considered.
 // Matches by exact model name first, then by source_model_pattern substring.
-func (c *RoutingConfig) FindMatchingRule(model string) *RoutingRule {
+func (c *RoutingConfig) FindMatchingRule(model string, sourceType string) *RoutingRule {
 	modelLower := strings.ToLower(model)
-	// First pass: exact match on model name (enabled only)
+	// First pass: exact match on model name (enabled only, filtered by source_type)
 	for i := range c.Rules {
-			if c.Rules[i].SourceModelPattern == "" {
-				continue
-			}
-		if c.Rules[i].Enabled && strings.ToLower(c.Rules[i].SourceModelPattern) == modelLower {
+		if c.Rules[i].SourceModelPattern == "" {
+			continue
+		}
+		if !c.Rules[i].Enabled {
+			continue
+		}
+		if !ruleMatchesSourceType(c.Rules[i], sourceType) {
+			continue
+		}
+		if strings.ToLower(c.Rules[i].SourceModelPattern) == modelLower {
 			return &c.Rules[i]
 		}
 	}
-	// Second pass: substring match (enabled only)
+	// Second pass: substring match (enabled only, filtered by source_type)
 	for i := range c.Rules {
-			if c.Rules[i].SourceModelPattern == "" {
-				continue
-			}
-		if c.Rules[i].Enabled && strings.Contains(modelLower, strings.ToLower(c.Rules[i].SourceModelPattern)) {
+		if c.Rules[i].SourceModelPattern == "" {
+			continue
+		}
+		if !c.Rules[i].Enabled {
+			continue
+		}
+		if !ruleMatchesSourceType(c.Rules[i], sourceType) {
+			continue
+		}
+		if strings.Contains(modelLower, strings.ToLower(c.Rules[i].SourceModelPattern)) {
 			return &c.Rules[i]
 		}
 	}
 	return nil
+}
+
+// ruleMatchesSourceType returns true if the rule should be considered for the given source type.
+// A rule with empty SourceType acts as a wildcard and matches any source type.
+// A rule with a non-empty SourceType only matches when sourceType equals it exactly.
+func ruleMatchesSourceType(rule RoutingRule, sourceType string) bool {
+	if sourceType == "" {
+		return true // No source type filter requested, match all
+	}
+	if rule.SourceType == "" {
+		return true // Rule has no source_type restriction, act as wildcard
+	}
+	return rule.SourceType == sourceType
 }
 
 // GetProvider returns a ProviderEntry by ID (only if enabled).
@@ -194,4 +222,96 @@ func IsModelRoutingEnabled() bool {
 		return *cfg.Mitm.ModelRoutingEnabled
 	}
 	return false
+}
+
+// LoadMitmHosts loads custom MITM host list from proxy_config.json (mitm.hosts field).
+// Returns nil if not configured — caller should use defaults.
+func LoadMitmHosts() []string {
+	configPath := os.Getenv("PROXY_CONFIG")
+	if configPath == "" {
+		configPath = os.Getenv("ANTIGRAVITY_CONFIG")
+	}
+	if configPath == "" {
+		home, _ := os.UserHomeDir()
+		configPath = home + "/.config/antigravity/proxy_config.json"
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil
+	}
+
+	var cfg struct {
+		Mitm struct {
+			Hosts []string `json:"hosts"`
+		} `json:"mitm"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil
+	}
+	return cfg.Mitm.Hosts
+}
+
+// IsLicenseValid checks patch_metadata.json for a valid (non-expired) license.
+// Returns true if no license info is present (unlicensed mode — backward compatible).
+func IsLicenseValid() bool {
+	// Find metadata file
+	metadataPath := os.Getenv("ANTIGRAVITY_METADATA")
+	if metadataPath == "" {
+		home, _ := os.UserHomeDir()
+		// Try common locations
+		baseDir := home + "/Library/Application Support/AntigravityProxy/"
+		appIds := []string{"antigravity", "antigravityIDE", "gemini", "agy", "claudeCode", "codex"}
+		var latestTime time.Time
+		for _, appId := range appIds {
+			dir := baseDir + appId + "/metadata/"
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), "launcher_patch_metadata_") && strings.HasSuffix(entry.Name(), ".json") {
+					info, err := entry.Info()
+					if err != nil {
+						continue
+					}
+					if info.ModTime().After(latestTime) {
+						latestTime = info.ModTime()
+						metadataPath = dir + entry.Name()
+					}
+				}
+			}
+		}
+	}
+
+	if metadataPath == "" {
+		return true // No metadata, allow (unlicensed)
+	}
+
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return true // Can't read, allow
+	}
+
+	var meta struct {
+		LicenseExpiresAt *float64 `json:"license_expires_at"`
+		LicenseHMAC      string  `json:"license_hmac"`
+		LicenseMachineId string  `json:"license_machine_id"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return true // Parse error, allow (old format)
+	}
+
+	if meta.LicenseExpiresAt == nil || meta.LicenseHMAC == "" {
+		return true // No license fields, allow
+	}
+
+	// Check expiration
+	now := time.Now().Unix()
+	if now > int64(*meta.LicenseExpiresAt) {
+		log.Printf("[Config] License expired at %v", time.Unix(int64(*meta.LicenseExpiresAt), 0))
+		return false
+	}
+
+	return true
 }

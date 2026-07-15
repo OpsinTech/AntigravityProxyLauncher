@@ -4,11 +4,14 @@ import Darwin
 
 enum LaunchError: LocalizedError {
     case cliSmokeTestFailed(String)
+    case appBundleLaunchFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .cliSmokeTestFailed(let output):
             return "CLI 验证失败: \(output)"
+        case .appBundleLaunchFailed(let reason):
+            return reason
         }
     }
 }
@@ -49,11 +52,25 @@ final class LaunchService {
         // 停止已有实例必须在后台线程，避免阻塞主线程（内部有轮询等待）
         stopManagedPatchedApp()
 
-        try? clearQuarantineAttributes()
+        // Pre-launch diagnostics: check critical files exist
+        let patchedAppURL = FileSystemPaths.patchedApp
+        guard FileManager.default.fileExists(atPath: patchedAppURL.path) else {
+            throw LaunchError.appBundleLaunchFailed("修复版 App 不存在: \(patchedAppURL.path)，请先执行修复")
+        }
 
-        let resourcesDir = FileSystemPaths.patchedApp
-            .appendingPathComponent("Contents/Resources")
+        let resourcesDir = patchedAppURL.appendingPathComponent("Contents/Resources")
         let dylibPath = resourcesDir.appendingPathComponent("libAntigravityTun.dylib").path
+        guard FileManager.default.fileExists(atPath: dylibPath) else {
+            throw LaunchError.appBundleLaunchFailed("dylib 缺失: \(dylibPath)，请重新修复")
+        }
+
+        let executablePath = patchedAppURL
+            .appendingPathComponent("Contents/MacOS/\(FileSystemPaths.activeApp.executableName)").path
+        guard FileManager.default.isExecutableFile(atPath: executablePath) else {
+            throw LaunchError.appBundleLaunchFailed("可执行文件不可用: \(executablePath)，请重新修复")
+        }
+
+        try? clearQuarantineAttributes()
 
         let config = NSWorkspace.OpenConfiguration()
         let activeApp = FileSystemPaths.activeApp
@@ -132,12 +149,16 @@ final class LaunchService {
         config.createsNewApplicationInstance = true
         config.promptsUserIfNeeded = false
 
-        let app = try await NSWorkspace.shared.openApplication(
-            at: FileSystemPaths.patchedApp,
-            configuration: config
-        )
-        self.activeAppPID = app.processIdentifier
-        return nil
+        do {
+            let app = try await NSWorkspace.shared.openApplication(
+                at: patchedAppURL,
+                configuration: config
+            )
+            self.activeAppPID = app.processIdentifier
+            return nil
+        } catch {
+            throw LaunchError.appBundleLaunchFailed("启动失败: \(error.localizedDescription)")
+        }
     }
 
     /// 清理应用的隔离属性，避免每次启动都需要输入密码
@@ -362,7 +383,8 @@ final class LaunchService {
     }
 
     private func stopCLIProcesses() {
-        let processNames = ["agy-real", "agy"]
+        let activeApp = FileSystemPaths.activeApp
+        let processNames = [activeApp.cliRealBinaryName, activeApp.executableName]
         for name in processNames {
             do {
                 let result = try CommandRunner.run("/usr/bin/pgrep", ["-f", name])
@@ -396,7 +418,7 @@ final class LaunchService {
 
     private func isCLIProcessRunning() -> Bool {
         do {
-            let result = try CommandRunner.run("/usr/bin/pgrep", ["-f", "agy-real"])
+            let result = try CommandRunner.run("/usr/bin/pgrep", ["-f", FileSystemPaths.activeApp.cliRealBinaryName])
             return !result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         } catch {
             return false

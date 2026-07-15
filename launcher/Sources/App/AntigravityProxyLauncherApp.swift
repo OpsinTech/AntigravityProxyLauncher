@@ -208,9 +208,11 @@ class ProxyManager {
     static let shared = ProxyManager()
     private var process: Process?
     private let proxyPort = 18081
+    private var isShuttingDown = false
 
     private init() {
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.isShuttingDown = true
             self?.stopProxy()
         }
     }
@@ -262,8 +264,16 @@ class ProxyManager {
         task.environment = env
 
         task.terminationHandler = { [weak self] proc in
-            LauncherLogger.warn("Go MITM Proxy exited (code: \(proc.terminationStatus))")
+            let exitCode = proc.terminationStatus
+            LauncherLogger.warn("Go MITM Proxy exited (code: \(exitCode))")
             self?.process = nil
+            // Auto-restart on unexpected exit (non-zero code or signal)
+            if exitCode != 0 && !self!.isShuttingDown {
+                LauncherLogger.info("Go MITM Proxy crashed, restarting in 2 seconds...")
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
+                    self?.startProxy()
+                }
+            }
         }
 
         do {
@@ -282,31 +292,70 @@ class ProxyManager {
     }
 
     func restartProxy() {
-        // 1. Kill ALL mitm_proxy processes (not just the one we started)
-        let killTask = Process()
-        killTask.launchPath = "/usr/bin/pkill"
-        killTask.arguments = ["-9", "-f", "mitm_proxy"]
-        killTask.launch()
-        killTask.waitUntilExit()
+        // 1. Kill our own process first (by PID if we have it)
+        if let p = process, p.isRunning {
+            p.terminate()
+            p.waitUntilExit()
+        }
+        
+        // 2. Clean up any stale mitm_proxy on our port (only if port still in use)
+        if isProxyPortInUse() {
+            let killTask = Process()
+            killTask.launchPath = "/usr/bin/lsof"
+            killTask.arguments = ["-ti", ":\(proxyPort)"]
+            let pipe = Pipe()
+            killTask.standardOutput = pipe
+            killTask.launch()
+            killTask.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let pids = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !pids.isEmpty {
+                for pid in pids.split(separator: "\n") {
+                    let killPID = Process()
+                    killPID.launchPath = "/bin/kill"
+                    killPID.arguments = ["-9", String(pid)]
+                    killPID.launch()
+                    killPID.waitUntilExit()
+                }
+            }
+        }
 
-        // 2. Wait for port to be free
+        // 3. Wait for port to be free
         let deadline = Date().addingTimeInterval(3)
         while Date() < deadline {
             if !isProxyPortInUse() { break }
             Thread.sleep(forTimeInterval: 0.2)
         }
 
-        // 3. Start fresh
+        // 4. Start fresh
         process = nil
         startProxy()
     }
 
     func stopProxy() {
-        let killTask = Process()
-        killTask.launchPath = "/usr/bin/pkill"
-        killTask.arguments = ["-9", "-f", "mitm_proxy"]
-        killTask.launch()
-        killTask.waitUntilExit()
+        if let p = process, p.isRunning {
+            p.terminate()
+            p.waitUntilExit()
+        }
+        // Clean up any remaining process on our port
+        if isProxyPortInUse() {
+            let killTask = Process()
+            killTask.launchPath = "/usr/bin/lsof"
+            killTask.arguments = ["-ti", ":\(proxyPort)"]
+            let pipe = Pipe()
+            killTask.standardOutput = pipe
+            killTask.launch()
+            killTask.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let pids = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !pids.isEmpty {
+                for pid in pids.split(separator: "\n") {
+                    let killPID = Process()
+                    killPID.launchPath = "/bin/kill"
+                    killPID.arguments = ["-9", String(pid)]
+                    killPID.launch()
+                    killPID.waitUntilExit()
+                }
+            }
+        }
         process = nil
         LauncherLogger.info("Go MITM Proxy stopped")
     }

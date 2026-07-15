@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev/**]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Go MITM Proxy tests
+  go-test:
+    name: Go Test
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: tools/mitm_proxy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: tools/mitm_proxy/go.sum
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  # Swift Launcher build check
+  swift-build:
+    name: Swift Build
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: launcher
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (debug)
+        run: swift build --configuration debug
+      - name: Build (release)
+        run: swift build --configuration release
+
+  # C++ dylib build check
+  cpp-build:
+    name: C++ Build
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: AntigravityTun
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dylib
+        run: |
+          xcodebuild -project AntigravityTun.xcodeproj \
+            -scheme AntigravityTun \
+            -configuration Release \
+            -derivedDataPath build \
+            build

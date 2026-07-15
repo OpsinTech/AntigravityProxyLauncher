@@ -37,7 +37,7 @@ enum AppStatus: Equatable {
         case .launching:
             return isCLI ? "正在验证" : "正在启动"
         case .running:
-            return isCLI ? "Agy CLI 可用" : "运行中"
+            return isCLI ? "\(appName) 可用" : "运行中"
         case .repairRequired:
             return "需要修复"
         case .error:
@@ -47,10 +47,11 @@ enum AppStatus: Equatable {
 
     var description: String {
         let appName = FileSystemPaths.activeApp.displayName
+        let exeName = FileSystemPaths.activeApp.executableName
         let isCLI = FileSystemPaths.activeApp.targetType == .cliBinary
         switch self {
         case .targetAppMissing:
-            return "请先安装 \(isCLI ? "agy CLI" : appName): \(FileSystemPaths.targetApp.path)"
+            return "请先安装 \(appName): \(FileSystemPaths.targetApp.path)"
         case .targetAppUnsupportedVersion(let version):
             return "当前版本 \(version) 不在兼容列表中。"
         case .targetAppInstalled:
@@ -64,11 +65,11 @@ enum AppStatus: Equatable {
         case .cleaning:
             return "正在移除修复版及相关配置碎片。"
         case .patchedReady:
-            return isCLI ? "修复完成，可在终端使用 agy 命令。" : "可以启动修复版。"
+            return isCLI ? "修复完成，可在终端使用 \(exeName) 命令。" : "可以启动修复版。"
         case .launching:
-            return isCLI ? "正在运行 agy --version 验证安装..." : "正在拉起修复版应用。"
+            return isCLI ? "正在运行 \(exeName) --version 验证安装..." : "正在拉起修复版应用。"
         case .running:
-            return isCLI ? "代理注入已就绪，终端执行 agy 将自动走代理。" : "修复版正在运行。"
+            return isCLI ? "代理注入已就绪，终端执行 \(exeName) 将自动走代理。" : "修复版正在运行。"
         case .repairRequired(let reason):
             return reason
         case .error(let message):

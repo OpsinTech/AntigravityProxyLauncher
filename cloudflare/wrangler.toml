@@ -1,0 +1,14 @@
+name = "antigravity-license-api"
+main = "license-api.js"
+compatibility_date = "2025-01-01"
+
+# KV namespace for license storage
+[[kv_namespaces]]
+binding = "LICENSE_STORE"
+id = "YOUR_KV_NAMESPACE_ID"  # Replace after `wrangler kv:namespace create LICENSE_STORE`
+
+# Admin secret for /renew endpoint (set via `wrangler secret put LICENSE_ADMIN_SECRET`)
+# DO NOT hardcode here
+
+[env.production]
+# Production-specific settings (optional)

@@ -270,20 +270,39 @@ func (p *OpenAIProvider) SendStreamRequest(ctx context.Context, req *ProviderReq
 	}
 
 	chunks := make(chan StreamChunk, 100)
-	go p.processStream(resp.Body, chunks)
+	go p.processStream(ctx, resp.Body, chunks)
 
 	return chunks, nil
 }
 
-func (p *OpenAIProvider) processStream(body io.ReadCloser, chunks chan<- StreamChunk) {
+func (p *OpenAIProvider) processStream(ctx context.Context, body io.ReadCloser, chunks chan<- StreamChunk) {
 	defer body.Close()
 	defer close(chunks)
+
+	// Non-blocking send: respects context cancellation and avoids goroutine leak
+	// when the consumer has stopped reading.
+	send := func(chunk StreamChunk) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		case chunks <- chunk:
+			return true
+		}
+	}
 
 	scanner := bufio.NewScanner(body)
 	buf := make([]byte, 0, 1024*1024)
 	scanner.Buffer(buf, 1024*1024)
 	chunkCount := 0
 	for scanner.Scan() {
+		// Check context before processing each line
+		select {
+		case <-ctx.Done():
+			log.Printf("[OpenAI:%s] Stream cancelled by context, chunks=%d", p.config.ID, chunkCount)
+			return
+		default:
+		}
+
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
 			continue
@@ -291,7 +310,7 @@ func (p *OpenAIProvider) processStream(body io.ReadCloser, chunks chan<- StreamC
 
 		dataStr := strings.TrimPrefix(line, "data: ")
 		if dataStr == "[DONE]" {
-			chunks <- StreamChunk{Done: true}
+			send(StreamChunk{Done: true})
 			log.Printf("[OpenAI:%s] Stream completed normally, chunks=%d", p.config.ID, chunkCount)
 			return
 		}
@@ -317,16 +336,19 @@ func (p *OpenAIProvider) processStream(body io.ReadCloser, chunks chan<- StreamC
 		}
 
 		chunkCount++
-		chunks <- chunk
+		if !send(chunk) {
+			log.Printf("[OpenAI:%s] Stream send cancelled (consumer gone), chunks=%d", p.config.ID, chunkCount)
+			return
+		}
 	}
 
 	// If we get here without [DONE], the scanner stopped
 	if err := scanner.Err(); err != nil {
 		log.Printf("[OpenAI:%s] Stream interrupted: %v, chunks=%d", p.config.ID, err, chunkCount)
-		chunks <- StreamChunk{Error: fmt.Errorf("stream interrupted: %w", err)}
+		send(StreamChunk{Error: fmt.Errorf("stream interrupted: %w", err)})
 	} else {
 		log.Printf("[OpenAI:%s] Stream ended without [DONE], chunks=%d", p.config.ID, chunkCount)
-		chunks <- StreamChunk{Done: true}
+		send(StreamChunk{Done: true})
 	}
 }
 
