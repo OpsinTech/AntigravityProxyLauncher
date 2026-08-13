@@ -489,26 +489,12 @@ final class PatchService {
             return "unavailable"
         }()
 
-        // Load license info if available
-        let licenseInfo = try? LicenseService().loadLocal()
-        let licenseExpiresAt = licenseInfo?.expiresAt
-        let licenseMachineId = licenseInfo?.machineId
-        let licenseHMAC: String? = {
-            if let expiresAt = licenseExpiresAt, let machineId = licenseMachineId {
-                return PatchMetadata.computeLicenseHMAC(expiresAt: expiresAt, machineId: machineId)
-            }
-            return nil
-        }()
-
         let metadata = PatchMetadata(
             launcherVersion: LauncherAppState.resolveLauncherVersion(),
             targetVersion: appVersion,
             patchedAt: Date(),
             dylibChecksum: dylibChecksum,
-            configChecksum: configChecksum,
-            licenseExpiresAt: licenseExpiresAt,
-            licenseMachineId: licenseMachineId,
-            licenseHMAC: licenseHMAC
+            configChecksum: configChecksum
         )
 
         let safeVersion = appVersion.replacingOccurrences(of: "/", with: "_")

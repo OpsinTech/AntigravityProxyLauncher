@@ -1,16 +1,7 @@
 import Foundation
 
-/// Service for loading, saving, and managing model routing configurations.
-///
-/// Editing layer: two per-ecosystem config files
-///   - `~/.config/antigravity/model_routing_google.json`
-///   - `~/.config/antigravity/model_routing_anthropic.json`
-///
-/// Proxy consumption layer: a single merged file
-///   - `~/.config/antigravity/model_routing.json`
-///
-/// The Go proxy reads only the merged file; the Swift launcher generates it
-/// automatically whenever either ecosystem config is saved.
+/// Service for loading and saving model routing configuration.
+/// Single config file: ~/.config/antigravity/model_routing.json
 struct ModelRoutingService {
     private let decoder = JSONDecoder()
     private let encoder: JSONEncoder = {
@@ -19,117 +10,37 @@ struct ModelRoutingService {
         return encoder
     }()
 
-    /// Returns the absolute path to the merged proxy config file.
     func configPath() -> String {
         FileSystemPaths.userModelRoutingConfigFile.path
     }
 
-    /// Returns the absolute path for a specific ecosystem config file.
-    func configPath(for system: String) -> String {
-        switch system {
-        case "google":
-            return FileSystemPaths.userModelRoutingConfigGoogleFile.path
-        case "anthropic":
-            return FileSystemPaths.userModelRoutingConfigAnthropicFile.path
-        default:
-            return FileSystemPaths.userModelRoutingConfigFile.path
-        }
-    }
-
-    // MARK: - Load
-
-    /// Loads both ecosystem configs, migrating from the old single file if necessary.
-    func loadBoth() throws -> (google: ModelRoutingConfig, anthropic: ModelRoutingConfig) {
-        let googleURL = FileSystemPaths.userModelRoutingConfigGoogleFile
-        let anthropicURL = FileSystemPaths.userModelRoutingConfigAnthropicFile
-        let mergedURL = FileSystemPaths.userModelRoutingConfigFile
-
-        let googleExists = FileManager.default.fileExists(atPath: googleURL.path)
-        let anthropicExists = FileManager.default.fileExists(atPath: anthropicURL.path)
-
-        if googleExists && anthropicExists {
-            // Normal path: load both ecosystem files
-            let googleConfig = try loadFrom(url: googleURL)
-            let anthropicConfig = try loadFrom(url: anthropicURL)
-            return (googleConfig, anthropicConfig)
-        }
-
-        // Migration path: split old merged file, or use defaults
-        let googleConfig: ModelRoutingConfig
-        let anthropicConfig: ModelRoutingConfig
-
-        if FileManager.default.fileExists(atPath: mergedURL.path) {
+    func load() throws -> ModelRoutingConfig {
+        let url = FileSystemPaths.userModelRoutingConfigFile
+        if FileManager.default.fileExists(atPath: url.path) {
             do {
-                let merged = try loadFrom(url: mergedURL)
-                googleConfig = ModelRoutingConfig(
-                    providers: merged.providers,
-                    routingRules: merged.rules(for: "google")
-                )
-                anthropicConfig = ModelRoutingConfig(
-                    providers: merged.providers,
-                    routingRules: merged.rules(for: "anthropic")
-                )
+                return try loadFrom(url: url)
             } catch {
                 // Config corrupted — backup and use defaults
-                let brokenPath = mergedURL.path
+                let brokenPath = url.path
                 let backupPath = brokenPath + ".corrupted." + ISO8601DateFormatter().string(from: Date())
                     .replacingOccurrences(of: ":", with: "-")
                 try? FileManager.default.copyItem(atPath: brokenPath, toPath: backupPath)
                 try? FileManager.default.removeItem(atPath: brokenPath)
-                googleConfig = .defaultGoogle
-                anthropicConfig = .defaultAnthropic
+                let config = ModelRoutingConfig.default
+                try save(config)
+                return config
             }
-        } else {
-            googleConfig = .defaultGoogle
-            anthropicConfig = .defaultAnthropic
         }
-
-        // Persist the split files and regenerate the merged file
-        try saveTo(url: googleURL, config: googleConfig)
-        try saveTo(url: anthropicURL, config: anthropicConfig)
-        try mergeAndSaveProxyConfig(google: googleConfig, anthropic: anthropicConfig)
-
-        return (googleConfig, anthropicConfig)
+        // First launch: use defaults and save
+        let config = ModelRoutingConfig.default
+        try save(config)
+        return config
     }
 
-    /// Loads a single ecosystem config.
-    func load(for system: String) throws -> ModelRoutingConfig {
-        let url = URL(fileURLWithPath: configPath(for: system))
-        return try loadFrom(url: url)
-    }
-
-    // MARK: - Save
-
-    /// Saves the given config for the specified ecosystem, then regenerates the
-    /// merged proxy file by loading the other ecosystem's config and merging.
-    func save(_ config: ModelRoutingConfig, for system: String) throws {
-        let url = URL(fileURLWithPath: configPath(for: system))
+    func save(_ config: ModelRoutingConfig) throws {
+        let url = FileSystemPaths.userModelRoutingConfigFile
         try saveTo(url: url, config: config)
-
-        // Reload the other ecosystem and regenerate the merged proxy file
-        let otherSystem = system == "google" ? "anthropic" : "google"
-        let otherConfig: ModelRoutingConfig
-        do {
-            otherConfig = try load(for: otherSystem)
-        } catch {
-            otherConfig = (otherSystem == "google") ? .defaultGoogle : .defaultAnthropic
-        }
-
-        if system == "google" {
-            try mergeAndSaveProxyConfig(google: config, anthropic: otherConfig)
-        } else {
-            try mergeAndSaveProxyConfig(google: otherConfig, anthropic: config)
-        }
     }
-
-    /// Merges google + anthropic configs and writes the combined result to the
-    /// Go proxy's `model_routing.json`.
-    func mergeAndSaveProxyConfig(google: ModelRoutingConfig, anthropic: ModelRoutingConfig) throws {
-        let merged = google.mergeWith(anthropic)
-        try saveTo(url: FileSystemPaths.userModelRoutingConfigFile, config: merged)
-    }
-
-    // MARK: - Private helpers
 
     private func loadFrom(url: URL) throws -> ModelRoutingConfig {
         let data = try Data(contentsOf: url)

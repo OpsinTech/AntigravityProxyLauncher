@@ -26,6 +26,7 @@ struct MenuBarAppStatus {
 @MainActor
 final class LauncherAppState: ObservableObject {
     @Published var selectedTab: LauncherTab = .overview
+    @Published var isActivated: Bool = false
     @Published var status: AppStatus = .targetAppMissing
     @Published var appInfo: AppInfo?
     @Published var workflowItems: [LaunchWorkflowItem] = LaunchWorkflowStep.allCases.map {
@@ -38,9 +39,7 @@ final class LauncherAppState: ObservableObject {
     @Published var configStatusMessage: String?
     @Published var configErrorMessage: String?
     @Published var modelRoutingErrorMessage: String?
-    @Published var modelRoutingConfigGoogle: ModelRoutingConfig = .defaultGoogle
-    @Published var modelRoutingConfigAnthropic: ModelRoutingConfig = .defaultAnthropic
-    @Published var selectedRoutingSystem: String = "google"
+    @Published var modelRoutingConfig: ModelRoutingConfig = .default
     private var hasLoadedModelRoutingConfigs = false
     private let modelRoutingService = ModelRoutingService()
     @Published var settingsDraft: AppSettings = .default
@@ -50,11 +49,6 @@ final class LauncherAppState: ObservableObject {
     @Published var releaseUpdateInfo: ReleaseUpdateInfo?
     @Published var releaseUpdateStatusMessage: String?
     @Published var releaseUpdateErrorMessage: String?
-    @Published var licenseInfo: LicenseInfo?
-    @Published var licenseStatusMessage: String?
-    @Published var licenseErrorMessage: String?
-    private let licenseService = LicenseService()
-    @Published var licenseKeyInput: String = ""
 
     @Published var allAppStatuses: [TargetApp: MenuBarAppStatus] = [:]
 
@@ -107,7 +101,6 @@ final class LauncherAppState: ObservableObject {
         loadProxyConfig()
         loadModelRoutingConfigs()
         loadSettings()
-        loadLicenseStatus()
         refreshAllAppStatuses()
 
         guard let app = appDetectionService.detectInstalledTargetApp() else {
@@ -413,9 +406,7 @@ final class LauncherAppState: ObservableObject {
 
     func loadModelRoutingConfigs() {
         do {
-            let (google, anthropic) = try modelRoutingService.loadBoth()
-            modelRoutingConfigGoogle = google
-            modelRoutingConfigAnthropic = anthropic
+            modelRoutingConfig = try modelRoutingService.load()
             modelRoutingErrorMessage = nil
             hasLoadedModelRoutingConfigs = true
         } catch {
@@ -430,50 +421,15 @@ final class LauncherAppState: ObservableObject {
         }
     }
 
-    /// Returns the config draft for the currently selected routing system.
-    var currentModelRoutingConfig: ModelRoutingConfig {
-        get {
-            selectedRoutingSystem == "anthropic" ? modelRoutingConfigAnthropic : modelRoutingConfigGoogle
-        }
-        set {
-            if selectedRoutingSystem == "anthropic" {
-                modelRoutingConfigAnthropic = newValue
-            } else {
-                modelRoutingConfigGoogle = newValue
-            }
-        }
-    }
-
-    /// Saves the currently selected system's config and regenerates the merged proxy file.
+    /// Saves the model routing config.
     func saveCurrentModelRoutingConfig() {
-        let config = currentModelRoutingConfig
         do {
-            try modelRoutingService.save(config, for: selectedRoutingSystem)
-            // Reload the other config to keep in-memory state consistent
-            let otherSystem = selectedRoutingSystem == "google" ? "anthropic" : "google"
-            if let other = try? modelRoutingService.load(for: otherSystem) {
-                if otherSystem == "google" {
-                    modelRoutingConfigGoogle = other
-                } else {
-                    modelRoutingConfigAnthropic = other
-                }
-            }
+            try modelRoutingService.save(modelRoutingConfig)
             modelRoutingErrorMessage = nil
-            appendLog("模型映射配置（\(selectedRoutingSystem == "anthropic" ? "Anthropic" : "Google") 体系）已保存。")
+            appendLog("模型映射配置已保存。")
         } catch {
             modelRoutingErrorMessage = "保存模型映射配置失败: \(error.localizedDescription)"
             appendLog("保存模型映射配置失败: \(error.localizedDescription)")
-        }
-    }
-
-    /// Synchronizes providers from the current system to the other system.
-    /// Called whenever providers are modified in one ecosystem's view.
-    func syncProvidersToOtherSystem() {
-        let current = currentModelRoutingConfig
-        if selectedRoutingSystem == "google" {
-            modelRoutingConfigAnthropic.providers = current.providers
-        } else {
-            modelRoutingConfigGoogle.providers = current.providers
         }
     }
 
@@ -510,6 +466,7 @@ final class LauncherAppState: ObservableObject {
             }
 
             settingsDraft = loadedSettings
+            isActivated = loadedSettings.isActivated
             settingsErrorMessage = nil
             applyDockIconSetting()
             checkLauncherUpdates(manual: false)
@@ -535,6 +492,31 @@ final class LauncherAppState: ObservableObject {
             settingsErrorMessage = "保存设置失败: \(error.localizedDescription)"
             settingsStatusMessage = nil
             appendLog("保存设置失败: \(error.localizedDescription)")
+        }
+    }
+
+    private let validActivationCodes: Set<String> = [
+        "QUctN0syTS05WDRQ",
+        "QUctM044US02VDJX",
+        "QUctNUoxTC04UjNZ",
+        "QUctMk05Sy00UDdO",
+        "QUctOFEzVC02VzFK"
+    ]
+
+    func verifyActivation(code: String) -> (success: Bool, message: String) {
+        let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let encoded = Data(normalizedCode.utf8).base64EncodedString()
+        if normalizedCode.isEmpty {
+            return (false, "激活码不能为空")
+        }
+        
+        if validActivationCodes.contains(encoded) {
+            settingsDraft.isActivated = true
+            isActivated = true
+            saveSettings()
+            return (true, "激活成功")
+        } else {
+            return (false, "激活码无效，请关注公众号获取正确激活码")
         }
     }
 
@@ -815,7 +797,7 @@ final class LauncherAppState: ObservableObject {
         return (String(parts[0]), String(parts[1]))
     }
 
-    static func resolveLauncherVersion() -> String {
+    nonisolated static func resolveLauncherVersion() -> String {
         // Try bundled version.txt first (release builds)
         if let url = Bundle.main.url(forResource: "version", withExtension: "txt"),
            let content = try? String(contentsOf: url, encoding: .utf8) {
@@ -838,59 +820,5 @@ final class LauncherAppState: ObservableObject {
            !build.isEmpty { return build }
 
         return "0.1.0-dev"
-    }
-
-    // MARK: - License management
-
-    func loadLicenseStatus() {
-        if let local = try? licenseService.loadLocal() {
-            licenseInfo = local
-            licenseErrorMessage = nil
-        }
-    }
-
-    func activateLicense(key: String) {
-        licenseStatusMessage = "正在验证 License..."
-        licenseErrorMessage = nil
-
-        Task {
-            do {
-                let info = try await licenseService.activate(key: key)
-                await MainActor.run {
-                    licenseInfo = info
-                    licenseStatusMessage = "License 激活成功！\(info.statusText)"
-                    licenseErrorMessage = nil
-                    appendLog("License 已激活: \(info.plan), 过期时间 \(info.expiresAt)")
-                }
-            } catch {
-                await MainActor.run {
-                    licenseErrorMessage = error.localizedDescription
-                    licenseStatusMessage = nil
-                }
-            }
-        }
-    }
-
-    func verifyLicense() {
-        Task {
-            do {
-                if let info = try await licenseService.verify() {
-                    await MainActor.run {
-                        licenseInfo = info
-                        licenseErrorMessage = nil
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    licenseErrorMessage = error.localizedDescription
-                }
-            }
-        }
-    }
-
-    func deactivateLicense() {
-        licenseService.clearLocal()
-        licenseInfo = nil
-        licenseStatusMessage = "License 已移除"
     }
 }

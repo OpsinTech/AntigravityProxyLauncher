@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,7 +68,7 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	if modelName == "" {
 		log.Printf("[Gemini] No model in body, passing through: %s", r.URL.Path)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return r, nil
+		return h.handlePassthrough(r, ctx)
 	}
 
 	log.Printf("[Gemini] Detected model: %s, searching routing rules...", modelName)
@@ -76,17 +78,62 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		// Fallback: match rules without source_type restriction (wildcard)
 		rule = h.routingConfig.FindMatchingRule(modelName, "")
 	}
-	if rule == nil {
-		log.Printf("[Gemini] No routing rule matched for model=%s, passing through", modelName)
+
+	var targetProviderID, targetModel string
+	if rule != nil {
+		targetProviderID, targetModel = h.routingConfig.ResolveLLMRouterTarget(rule, bodyBytes, "gemini")
+	} else {
+		// Direct model match: check if requested model matches any enabled provider's model (e.g. CodeBuddy)
+		for _, p := range h.routingConfig.Providers {
+			if !p.Enabled {
+				continue
+			}
+			for _, m := range p.Models {
+				if strings.EqualFold(m, modelName) {
+					targetProviderID = p.ID
+					targetModel = m
+					break
+				}
+			}
+			if targetProviderID != "" {
+				break
+			}
+		}
+	}
+
+	if targetProviderID == "" || targetModel == "" {
+		log.Printf("[Gemini] No routing rule or enabled provider matched for model=%s, passing through", modelName)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
 
-	log.Printf("[Gemini] Rule matched: %s -> %s @ %s", modelName, rule.TargetModel, rule.TargetProviderID)
+	log.Printf("[Gemini] Rule matched: %s -> %s @ %s", modelName, targetModel, targetProviderID)
 
-	providerConfig := h.routingConfig.GetProvider(rule.TargetProviderID)
-	if providerConfig == nil || providerConfig.ApiKey == "" {
-		log.Printf("[Gemini] Provider not configured or missing API key: %s", rule.TargetProviderID)
+	// Built-in Gemini routing: keep the original Google authentication and Gemini
+	// wrapped request format, only substitute the model name, then passthrough.
+	// No third-party provider config or API key is required.
+	if targetProviderID == config.GeminiBuiltinProviderID {
+		if targetModel != "" {
+			patched := substituteGeminiModel(bodyBytes, targetModel)
+			if patched == nil {
+				log.Printf("[Gemini] Failed to substitute model for gemini_builtin, passing through")
+				r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+				return r, nil
+			}
+			log.Printf("[Gemini] gemini_builtin: substituting model %s -> %s", modelName, targetModel)
+			bodyBytes = patched
+		} else {
+			log.Printf("[Gemini] gemini_builtin: no target model, passing through unchanged")
+		}
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		return h.handlePassthrough(r, ctx)
+	}
+
+	// Local model servers (ollama / vllm / llama.cpp) often need no API key,
+	// so only a missing provider entry blocks routing here.
+	providerConfig := h.routingConfig.GetProvider(targetProviderID)
+	if providerConfig == nil {
+		log.Printf("[Gemini] Provider not configured: %s", targetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
@@ -98,21 +145,21 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		return r, nil
 	}
 
-	p, err := h.providerRegistry.GetProvider(rule.TargetProviderID)
+	p, err := h.providerRegistry.GetProvider(targetProviderID)
 	if err != nil {
-		log.Printf("[Gemini] Provider not found: %s", rule.TargetProviderID)
+		log.Printf("[Gemini] Provider not found: %s", targetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
 
-	providerReq, err := trans.TranslateRequest(bodyBytes, rule.TargetModel)
+	providerReq, err := trans.TranslateRequest(bodyBytes, targetModel)
 	if err != nil {
 		log.Printf("[Gemini] Translation failed: %v", err)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
 
-	log.Printf("[Gemini] Translating %s -> %s (provider: %s)", modelName, rule.TargetModel, rule.TargetProviderID)
+	log.Printf("[Gemini] Translating %s -> %s (provider: %s)", modelName, targetModel, targetProviderID)
 
 	if providerReq.Stream {
 		streamCtx, streamCancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -148,10 +195,56 @@ func (h *GeminiHandler) handlePassthrough(r *http.Request, ctx *goproxy.ProxyCtx
 		}
 	}
 
+	// Debug aid: log the model list returned by fetchAvailableModels so we can
+	// discover the exact model IDs the Cloud Code backend accepts and watch for
+	// model ID changes over time. Only the model ID + displayName are logged.
+	if strings.Contains(r.URL.Path, "fetchAvailableModels") {
+		log.Printf("[Gemini] fetchAvailableModels models: %s", summarizeAvailableModels(bodyBytes))
+	}
+
 	resp.Header.Del("Content-Encoding")
 	resp.ContentLength = int64(len(bodyBytes))
 	resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 	return r, resp
+}
+
+// summarizeAvailableModels parses a fetchAvailableModels response body and
+// returns a compact "modelId => displayName" list for logging. Falls back to a
+// truncated raw dump if the body cannot be parsed.
+func summarizeAvailableModels(data []byte) string {
+	var payload struct {
+		Models map[string]struct {
+			DisplayName string `json:"displayName"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil || payload.Models == nil {
+		return truncateForLog(data, 2000)
+	}
+
+	var keys []string
+	for id := range payload.Models {
+		keys = append(keys, id)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	b.WriteString("[" + strconv.Itoa(len(keys)) + "]")
+	for _, id := range keys {
+		name := payload.Models[id].DisplayName
+		if name == "" {
+			name = "-"
+		}
+		b.WriteString(" " + id + "=" + name + ";")
+	}
+	return b.String()
+}
+
+// truncateForLog truncates a byte slice to at most max bytes for logging.
+func truncateForLog(data []byte, max int) string {
+	if len(data) <= max {
+		return string(data)
+	}
+	return string(data[:max]) + "...(truncated)"
 }
 
 func (h *GeminiHandler) handleNonStreamRequest(
@@ -277,4 +370,34 @@ func (h *GeminiHandler) extractModelFromBody(body []byte) string {
 	}
 
 	return ""
+}
+
+// substituteGeminiModel rewrites the "model" field of a Gemini (Cloud Code wrapped)
+// request body to targetModel. Handles both top-level "model" and nested
+// "request.model" formats. Returns nil if the body cannot be parsed or the model
+// field is not found (caller should pass through unchanged).
+func substituteGeminiModel(body []byte, targetModel string) []byte {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+
+	// Top-level model field (Cloud Code wrapped format: {"model": "...", "request": {...}})
+	if _, ok := raw["model"].(string); ok {
+		raw["model"] = targetModel
+	} else if req, ok := raw["request"].(map[string]interface{}); ok {
+		if _, ok := req["model"].(string); ok {
+			req["model"] = targetModel
+		} else {
+			return nil
+		}
+	} else {
+		return nil
+	}
+
+	patched, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	return patched
 }

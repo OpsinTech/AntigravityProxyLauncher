@@ -39,10 +39,30 @@ type AnthropicRequest struct {
 	MaxTokens int                `json:"max_tokens,omitempty"`
 }
 
-// AnthropicMessage represents an Anthropic message
+// AnthropicMessage represents an Anthropic message.
+// Content can be a string or []interface{} — we handle both.
 type AnthropicMessage struct {
-	Role    string        `json:"role"`
-	Content []interface{} `json:"content"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+func (m *AnthropicMessage) ContentAsArray() []interface{} {
+	if len(m.Content) == 0 {
+		return nil
+	}
+	// Try as array first
+	var arr []interface{}
+	if json.Unmarshal(m.Content, &arr) == nil {
+		return arr
+	}
+	// Try as string, wrap in text block
+	var str string
+	if json.Unmarshal(m.Content, &str) == nil {
+		return []interface{}{
+			map[string]interface{}{"type": "text", "text": str},
+		}
+	}
+	return nil
 }
 
 // AnthropicTool represents an Anthropic tool
@@ -103,7 +123,7 @@ func (t *AnthropicToOpenAI) TranslateRequest(sourceReq []byte, targetModel strin
 		oMsg := provider.Message{Role: m.Role}
 		var textContent string
 
-		for _, rawBlock := range m.Content {
+		for _, rawBlock := range m.ContentAsArray() {
 			block, ok := rawBlock.(map[string]interface{})
 			if !ok {
 				if strBlock, ok := rawBlock.(string); ok {

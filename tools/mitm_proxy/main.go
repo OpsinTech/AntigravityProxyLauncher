@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net"
@@ -87,13 +88,6 @@ func main() {
 	// Load MITM hosts from config (with defaults)
 	loadMitmHosts()
 
-	// Check license before enabling model routing
-	if !config.IsLicenseValid() {
-		log.Println("[MITM] License invalid or expired, running in passthrough mode only")
-		runPassthroughOnly()
-		return
-	}
-
 	_ = godotenv.Load()
 
 	// Load proxy_config.json to check model_routing_enabled
@@ -127,6 +121,19 @@ func main() {
 	// Create providers from config
 	providerConfigs := modelRouting.ToProviderConfigs()
 	providerRegistry.LoadProvidersFromConfig(providerConfigs)
+
+	// Sync provider model lists (including models auto-fetched at startup via
+	// options.auto_models) back into the routing config so direct model matching
+	// and the /v1/models listing reflect runtime-fetched models.
+	for i := range modelRouting.Providers {
+		p := &modelRouting.Providers[i]
+		if !p.Enabled {
+			continue
+		}
+		if inst, err := providerRegistry.GetProvider(p.ID); err == nil {
+			p.Models = inst.SupportedModels()
+		}
+	}
 
 	// Create routing config for handlers
 	routingConfig := modelRouting.ToHandlerRoutingConfig()
@@ -207,12 +214,22 @@ func main() {
 		port = "18081"
 	}
 
+	// Wrap proxy for both CONNECT and direct POST
+	// Wrap proxy for both CONNECT (forward proxy) and direct POST (reverse proxy).
+	// The proxyWrapper enables external clients (e.g. Claude Code pointing
+	// ANTHROPIC_BASE_URL / OpenAI base URL at this host:port) to use model routing.
+	proxyWrapper := &proxyWrapper{
+		goproxy:          proxy,
+		handlerRegistry:  handlerRegistry,
+		providerRegistry: providerRegistry,
+	}
+
 	// Create server with timeouts
 	// WriteTimeout=0 for SSE streams (AI responses can exceed 5 minutes).
 	// Per-request timeouts are handled by context.WithTimeout in handlers.
 	server := &http.Server{
 		Addr:         "0.0.0.0:" + port,
-		Handler:      proxy,
+		Handler:      proxyWrapper,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 0, // SSE streams have no fixed duration
 		IdleTimeout:  120 * time.Second,
@@ -310,6 +327,125 @@ func runPassthroughOnly() {
 
 // openLogFile opens a log file with rotation: if the file exceeds 10 MB,
 // it is renamed to .1 (overwriting any previous backup) and a new file is created.
+// proxyWrapper handles both forward proxy (CONNECT) and reverse proxy
+// (direct POST from external clients, e.g. Claude Code with ANTHROPIC_BASE_URL
+// or OpenAI base URL pointing here). This is what enables external access.
+type proxyWrapper struct {
+	goproxy          *goproxy.ProxyHttpServer
+	handlerRegistry  *handler.Registry
+	providerRegistry *provider.Registry
+}
+
+func (w *proxyWrapper) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	// Handle direct reverse-proxy API calls (non-CONNECT)
+	if r.Method != "CONNECT" {
+		// 1. Return OpenAI-compatible model list for GET /v1/models or GET /models
+		if r.Method == "GET" && (r.URL.Path == "/v1/models" || r.URL.Path == "/models") {
+			w.handleModelsList(rw, r)
+			return
+		}
+
+		// 2. Set Host hint based on request path if not already set
+		path := r.URL.Path
+		if strings.Contains(path, "messages") {
+			r.URL.Host = "api.anthropic.com"
+			r.URL.Scheme = "https"
+		} else if strings.Contains(path, "generateContent") || strings.Contains(path, "v1beta") {
+			r.URL.Host = "generativelanguage.googleapis.com"
+			r.URL.Scheme = "https"
+		} else {
+			// Default to OpenAI (e.g. /v1/chat/completions or /chat/completions)
+			r.URL.Host = "api.openai.com"
+			r.URL.Scheme = "https"
+		}
+
+		h := w.handlerRegistry.FindHandler(r)
+		if h != nil {
+			log.Printf("[ReverseProxy] Direct API call: %s %s -> %s", r.Method, r.URL.Path, h.Name())
+			ctx := &goproxy.ProxyCtx{Req: r}
+			_, resp := h.Handle(r, ctx)
+			if resp != nil {
+				for k, v := range resp.Header {
+				rw.Header()[k] = v
+				}
+				rw.WriteHeader(resp.StatusCode)
+				if resp.Body != nil {
+					io.Copy(rw, resp.Body)
+					resp.Body.Close()
+				}
+				return
+			}
+			rw.WriteHeader(http.StatusBadGateway)
+			rw.Header().Set("Content-Type", "application/json")
+			rw.Write([]byte(`{"error": {"message": "No route matched for model mapping"}}`))
+			return
+		}
+		log.Printf("[ReverseProxy] No handler for: %s %s", r.Method, r.URL.Path)
+		rw.WriteHeader(http.StatusNotFound)
+		rw.Header().Set("Content-Type", "application/json")
+		rw.Write([]byte(`{"error": {"message": "No handler found for path"}}`))
+		return
+	}
+
+	// Default: use goproxy for forward proxy (CONNECT) requests
+	w.goproxy.ServeHTTP(rw, r)
+}
+
+func (w *proxyWrapper) handleModelsList(rw http.ResponseWriter, r *http.Request) {
+	modelRouting := config.LoadModelRouting()
+	modelSet := make(map[string]bool)
+
+	// Collect models from enabled providers (e.g. CodeBuddy). Prefer the live
+	// provider instance so models auto-fetched at startup (options.auto_models)
+	// are reflected here too.
+	for _, p := range modelRouting.Providers {
+		if p.Enabled {
+			models := p.Models
+			if inst, err := w.providerRegistry.GetProvider(p.ID); err == nil {
+				models = inst.SupportedModels()
+			}
+			for _, m := range models {
+				modelSet[m] = true
+			}
+		}
+	}
+	// Collect source models from enabled routing rules
+	for _, rule := range modelRouting.Rules {
+		if rule.Enabled && rule.SourceModelPattern != "" {
+			modelSet[rule.SourceModelPattern] = true
+		}
+	}
+
+	type ModelItem struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
+	}
+	type ModelsResponse struct {
+		Object string      `json:"object"`
+		Data   []ModelItem `json:"data"`
+	}
+
+	var items []ModelItem
+	now := time.Now().Unix()
+	for m := range modelSet {
+		items = append(items, ModelItem{
+			ID:      m,
+			Object:  "model",
+			Created: now,
+			OwnedBy: "antigravity",
+		})
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(http.StatusOK)
+	json.NewEncoder(rw).Encode(ModelsResponse{
+		Object: "list",
+		Data:   items,
+	})
+}
+
 func openLogFile(path string) *os.File {
 	const maxSize = 10 * 1024 * 1024
 

@@ -64,6 +64,12 @@ type ProviderRequest struct {
 	Messages []Message `json:"messages"`
 	Stream   bool      `json:"stream"`
 	Tools    []Tool    `json:"tools,omitempty"`
+	// RawBody holds the original request body for same-format passthrough.
+	// When set, the provider should use this body directly (with model name
+	// substituted) instead of marshaling the ProviderRequest struct. This
+	// preserves all original fields (temperature, max_tokens, top_p, etc.)
+	// and content format (string vs array).
+	RawBody []byte `json:"-"`
 }
 
 // ProviderResponse is the normalized response from a provider.

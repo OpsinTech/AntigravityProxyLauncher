@@ -66,6 +66,15 @@ fi
 cp -R "$APP_PATH" "$STAGING_DIR/$APP_BUNDLE_NAME"
 cp "$CLI_PATH" "$STAGING_DIR/$CLI_NAME"
 
+echo "[3.5/5] Bundle Go MITM proxy into app"
+MITM_PROXY_SRC="$(cd "$LAUNCHER_ROOT/../tools/mitm_proxy" && pwd)/mitm_proxy"
+if [ -f "$MITM_PROXY_SRC" ]; then
+  cp "$MITM_PROXY_SRC" "$STAGING_DIR/$APP_BUNDLE_NAME/Contents/Resources/mitm_proxy"
+  echo "  Bundled: $MITM_PROXY_SRC"
+else
+  echo "  WARNING: mitm_proxy binary not found at $MITM_PROXY_SRC, run 'go build -o mitm_proxy .' in tools/mitm_proxy first"
+fi
+
 ZIP_PATH="$DIST_DIR/Antigravity-Proxy-Launcher-macos-$VERSION_TAG.zip"
 DMG_PATH="$DIST_DIR/Antigravity-Proxy-Launcher-macos-$VERSION_TAG.dmg"
 

@@ -18,6 +18,7 @@ struct ModelRoutingView: View {
                 if isModelRoutingEnabled {
                     providerSection
                     routingRulesSection
+                    llmRouterSection
                     controlSection
                 } else {
                     disabledBanner
@@ -67,40 +68,10 @@ struct ModelRoutingView: View {
                     .font(.title2)
                     .bold()
             }
-            Text("配置模型转译规则，将目标应用的 AI 接口（如 Anthropic/Claude、Google Gemini）请求无缝映射到第三方兼容提供商。")
+            Text("配置模型转译规则，将目标应用的 AI 接口请求无缝映射到第三方兼容提供商。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 32)
-
-            // System selector — independent of which app is selected on the home page
-            HStack(spacing: 0) {
-                ForEach(["google", "anthropic"], id: \.self) { system in
-                    Button(action: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            appState.selectedRoutingSystem = system
-                        }
-                    }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: system == "google" ? "sparkles" : "hammer.fill")
-                                .font(.system(size: 12))
-                            Text(system == "google" ? "Google 体系" : "Anthropic 体系")
-                                .font(.system(size: 13, weight: .medium))
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 8)
-                        .background(appState.selectedRoutingSystem == system
-                            ? (system == "google" ? Color.blue.opacity(0.15) : Color.orange.opacity(0.15))
-                            : Color.gray.opacity(0.05))
-                        .foregroundStyle(appState.selectedRoutingSystem == system
-                            ? (system == "google" ? .blue : .orange)
-                            : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .background(Color.gray.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .padding(.leading, 32)
         }
     }
 
@@ -114,47 +85,24 @@ struct ModelRoutingView: View {
                 Text("接口厂家配置")
                     .font(.headline)
             }
-            Divider()
 
             Text("勾选启用的目标厂家，并分别设定对应的 API 接入点（Endpoint）和密钥（API Key）。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            HStack(spacing: 16) {
-                if appState.selectedRoutingSystem == "anthropic" {
-                    ForEach($appState.modelRoutingConfigAnthropic.providers) { $provider in
-                        ProviderCard(provider: $provider)
-                            .onChange(of: $provider.wrappedValue.enabled) { _ in appState.syncProvidersToOtherSystem() }
-                            .onChange(of: $provider.wrappedValue.apiEndpoint) { _ in appState.syncProvidersToOtherSystem() }
-                            .onChange(of: $provider.wrappedValue.apiKey) { _ in appState.syncProvidersToOtherSystem() }
-                            .onChange(of: $provider.wrappedValue.models) { _ in appState.syncProvidersToOtherSystem() }
-                            .onChange(of: $provider.wrappedValue.options) { _ in appState.syncProvidersToOtherSystem() }
-                    }
-                } else {
-                    ForEach($appState.modelRoutingConfigGoogle.providers) { $provider in
-                        ProviderCard(provider: $provider)
-                            .onChange(of: $provider.wrappedValue.enabled) { _ in appState.syncProvidersToOtherSystem() }
-                            .onChange(of: $provider.wrappedValue.apiEndpoint) { _ in appState.syncProvidersToOtherSystem() }
-                            .onChange(of: $provider.wrappedValue.apiKey) { _ in appState.syncProvidersToOtherSystem() }
-                            .onChange(of: $provider.wrappedValue.models) { _ in appState.syncProvidersToOtherSystem() }
-                            .onChange(of: $provider.wrappedValue.options) { _ in appState.syncProvidersToOtherSystem() }
-                    }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 16)], spacing: 16) {
+                ForEach($appState.modelRoutingConfig.providers) { $provider in
+                    ProviderCard(provider: $provider)
                 }
             }
         }
-        .padding(20)
-        .background(Color.gray.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-        )
+        .cardStyle(accent: .green)
     }
 
     // MARK: - Routing Rules Section
 
     private var routingRulesSection: some View {
-        let currentRules = appState.currentModelRoutingConfig.routingRules
+        let currentRules = appState.modelRoutingConfig.routingRules
 
         return VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 8) {
@@ -162,15 +110,6 @@ struct ModelRoutingView: View {
                     .foregroundStyle(.orange)
                 Text("模型路由映射规则")
                     .font(.headline)
-
-                Text(appState.selectedRoutingSystem == "anthropic" ? "Anthropic 体系" : "Google 体系")
-                    .font(.caption2)
-                    .fontWeight(.medium)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(appState.selectedRoutingSystem == "anthropic" ? Color.orange.opacity(0.15) : Color.blue.opacity(0.15))
-                    .foregroundStyle(appState.selectedRoutingSystem == "anthropic" ? .orange : .blue)
-                    .clipShape(Capsule())
             }
             Divider()
 
@@ -201,33 +140,17 @@ struct ModelRoutingView: View {
             .padding(.horizontal, 8)
 
             VStack(alignment: .leading, spacing: 8) {
-                if appState.selectedRoutingSystem == "anthropic" {
-                    ForEach($appState.modelRoutingConfigAnthropic.routingRules) { $rule in
-                        let ruleID = $rule.wrappedValue.id
-                        RoutingRuleRow(
-                            rule: $rule,
-                            allProviders: appState.modelRoutingConfigAnthropic.providers,
-                            onDelete: {
-                                appState.modelRoutingConfigAnthropic.routingRules.removeAll { $0.id == ruleID }
-                            }
-                        )
-                        if ruleID != currentRules.last?.id {
-                            Divider().opacity(0.5)
+                ForEach($appState.modelRoutingConfig.routingRules) { $rule in
+                    let ruleID = $rule.wrappedValue.id
+                    RoutingRuleRow(
+                        rule: $rule,
+                        allProviders: appState.modelRoutingConfig.providers,
+                        onDelete: {
+                            appState.modelRoutingConfig.routingRules.removeAll { $0.id == ruleID }
                         }
-                    }
-                } else {
-                    ForEach($appState.modelRoutingConfigGoogle.routingRules) { $rule in
-                        let ruleID = $rule.wrappedValue.id
-                        RoutingRuleRow(
-                            rule: $rule,
-                            allProviders: appState.modelRoutingConfigGoogle.providers,
-                            onDelete: {
-                                appState.modelRoutingConfigGoogle.routingRules.removeAll { $0.id == ruleID }
-                            }
-                        )
-                        if ruleID != currentRules.last?.id {
-                            Divider().opacity(0.5)
-                        }
+                    )
+                    if ruleID != currentRules.last?.id {
+                        Divider().opacity(0.5)
                     }
                 }
 
@@ -235,37 +158,211 @@ struct ModelRoutingView: View {
                     let newRule = ModelRoutingConfig.RoutingRule(
                         sourceModelPattern: "",
                         sourceDisplayName: "新规则",
-                        sourceType: appState.selectedRoutingSystem,
+                        sourceType: "google",
                         targetProviderID: nil,
                         targetModel: nil,
                         enabled: true
                     )
-                    if appState.selectedRoutingSystem == "anthropic" {
-                        appState.modelRoutingConfigAnthropic.routingRules.append(newRule)
-                    } else {
-                        appState.modelRoutingConfigGoogle.routingRules.append(newRule)
-                    }
+                    appState.modelRoutingConfig.routingRules.append(newRule)
                 }) {
-                    ButtonLabel(icon: "plus.circle.fill", text: "添加规则")
+                    HStack(spacing: 6) {
+                        Spacer()
+                        Image(systemName: "plus.circle")
+                        Text("添加规则")
+                        Spacer()
+                    }
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                            .foregroundStyle(.secondary.opacity(0.5))
+                    )
                 }
-                .secondaryActionStyle()
+                .buttonStyle(.plain)
                 .padding(.top, 4)
             }
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-            )
+            .innerPanelStyle()
         }
         .padding(20)
-        .background(Color.gray.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-        )
+        .cardStyle(accent: .orange)
+    }
+
+    // MARK: - LLMRouter Section
+
+    private var llmRouterSection: some View {
+        let hasLLMRouterRules = appState.modelRoutingConfig.routingRules.contains { $0.targetProviderID == LLMRouterProviderID }
+
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 8) {
+                Image(systemName: "shuffle")
+                    .foregroundStyle(.purple)
+                Text("LLM Router（关键词路由）")
+                    .font(.headline)
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { appState.modelRoutingConfig.llmRouter?.enabled ?? false },
+                    set: { isOn in
+                        if isOn {
+                            if appState.modelRoutingConfig.llmRouter == nil {
+                                appState.modelRoutingConfig.llmRouter = ModelRoutingConfig.LLMRouterConfig()
+                            }
+                            appState.modelRoutingConfig.llmRouter?.enabled = true
+                        } else {
+                            appState.modelRoutingConfig.llmRouter?.enabled = false
+                        }
+                    }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+            }
+            Divider()
+
+            if !hasLLMRouterRules {
+                Text("在上方「模型路由映射规则」中将目标服务商选择为「LLM Router」后，请求将进入关键词路由子系统。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if appState.modelRoutingConfig.llmRouter == nil || !appState.modelRoutingConfig.llmRouter!.enabled {
+                Text("已有规则映射到 LLM Router，但未开启此功能。开启后将根据关键词匹配路由到不同模型。")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else {
+                Text("根据请求内容中的关键词，自动路由到不同的目标模型。未命中关键词时使用默认模型。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if appState.modelRoutingConfig.llmRouter?.enabled == true {
+                // Default model
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("默认模型（未命中关键词时使用）")
+                        .font(.caption)
+                        .bold()
+                        .foregroundStyle(.secondary)
+
+                    HStack(spacing: 8) {
+                        Picker("默认厂家", selection: Binding(
+                            get: { appState.modelRoutingConfig.llmRouter?.defaultProviderID ?? "" },
+                            set: { newID in
+                                appState.modelRoutingConfig.llmRouter?.defaultProviderID = newID
+                                if let p = appState.modelRoutingConfig.providers.first(where: { $0.id == newID && $0.enabled }),
+                                   !p.models.isEmpty {
+                                    appState.modelRoutingConfig.llmRouter?.defaultModel = p.models[0]
+                                } else {
+                                    appState.modelRoutingConfig.llmRouter?.defaultModel = ""
+                                }
+                            }
+                        )) {
+                            Text("选择厂家").tag("")
+                            ForEach(appState.modelRoutingConfig.providers.filter(\.enabled)) { p in
+                                Text(p.name).tag(p.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 150)
+
+                        let defaultPID = appState.modelRoutingConfig.llmRouter?.defaultProviderID ?? ""
+                        if let provider = appState.modelRoutingConfig.providers.first(where: { $0.id == defaultPID && $0.enabled }) {
+                            Picker("默认模型", selection: Binding(
+                                get: { appState.modelRoutingConfig.llmRouter?.defaultModel ?? "" },
+                                set: { appState.modelRoutingConfig.llmRouter?.defaultModel = $0 }
+                            )) {
+                                Text("选择模型").tag("")
+                                ForEach(provider.models, id: \.self) { m in
+                                    Text(m).tag(m)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 200)
+                        } else {
+                            Spacer().frame(width: 200)
+                        }
+                    }
+                }
+
+                Divider()
+
+                // Keyword rules
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("关键词路由规则")
+                        .font(.caption)
+                        .bold()
+                        .foregroundStyle(.secondary)
+
+                    // Header
+                    HStack(spacing: 8) {
+                        Text("关键词（逗号分隔）")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 200, alignment: .leading)
+                        Text("匹配模式")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 90, alignment: .leading)
+                        Text("目标厂家")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 120, alignment: .leading)
+                        Text("目标模型")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 160, alignment: .leading)
+                        Spacer().frame(width: 24)
+                    }
+                    .padding(.horizontal, 4)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        let rulesBinding = Binding<[ModelRoutingConfig.LLMRouterRule]>(
+                            get: { appState.modelRoutingConfig.llmRouter?.rules ?? [] },
+                            set: { appState.modelRoutingConfig.llmRouter?.rules = $0 }
+                        )
+                        let currentRules = appState.modelRoutingConfig.llmRouter?.rules ?? []
+                        ForEach(rulesBinding) { $rule in
+                            let ruleID = $rule.wrappedValue.id
+                            LLMRouterRuleRow(
+                                rule: $rule,
+                                allProviders: appState.modelRoutingConfig.providers,
+                                onDelete: {
+                                    appState.modelRoutingConfig.llmRouter?.rules.removeAll { $0.id == ruleID }
+                                }
+                            )
+                            if ruleID != currentRules.last?.id {
+                                Divider().opacity(0.3)
+                            }
+                        }
+
+                        Button(action: {
+                            appState.modelRoutingConfig.llmRouter?.rules.append(
+                                ModelRoutingConfig.LLMRouterRule()
+                            )
+                        }) {
+                            HStack(spacing: 6) {
+                                Spacer()
+                                Image(systemName: "plus.circle")
+                                Text("添加关键词规则")
+                                Spacer()
+                            }
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                                    .foregroundStyle(.secondary.opacity(0.5))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 4)
+                    }
+                    .innerPanelStyle()
+                }
+            }
+        }
+        .padding(20)
+        .cardStyle(accent: .purple)
     }
 
     // MARK: - Control Section
@@ -274,12 +371,7 @@ struct ModelRoutingView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
                 Button(action: {
-                    let sysDefault: ModelRoutingConfig = appState.selectedRoutingSystem == "anthropic" ? .defaultAnthropic : .defaultGoogle
-                    if appState.selectedRoutingSystem == "anthropic" {
-                        appState.modelRoutingConfigAnthropic = sysDefault
-                    } else {
-                        appState.modelRoutingConfigGoogle = sysDefault
-                    }
+                    appState.modelRoutingConfig = .default
                     statusMessage = "已恢复默认映射规则，请点击保存并应用配置。"
                 }) {
                     ButtonLabel(icon: "arrow.counterclockwise", text: "恢复默认")
@@ -324,12 +416,7 @@ struct ModelRoutingView: View {
             }
         }
         .padding(20)
-        .background(Color.gray.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.gray.opacity(0.15), lineWidth: 1)
-        )
+        .cardStyle(accent: nil)
     }
 
     // MARK: - Helpers
@@ -377,7 +464,9 @@ struct ProviderCard: View {
     @State private var testOK = false
     private let modelService = ModelListService()
 
-    private var canTest: Bool { !provider.apiEndpoint.isEmpty && !provider.apiKey.isEmpty }
+    // Local model servers (ollama / vllm / llama.cpp) may not need an API key,
+    // so only the endpoint is required to run a connectivity test.
+    private var canTest: Bool { !provider.apiEndpoint.isEmpty }
 
     private var providerWebsite: URL? {
         switch provider.id {
@@ -451,6 +540,25 @@ struct ProviderCard: View {
                         .font(.system(.caption, design: .monospaced))
                     }
 
+                    HStack(spacing: 8) {
+                        Text(" ")
+                            .frame(width: 50, alignment: .leading)
+                        Toggle("自动同步模型列表（启动时自动从接口获取）", isOn: Binding(
+                            get: { provider.options["auto_models"] == "true" },
+                            set: { newValue in
+                                if newValue {
+                                    provider.options["auto_models"] = "true"
+                                } else {
+                                    provider.options.removeValue(forKey: "auto_models")
+                                }
+                                clearTestResult()
+                            }
+                        ))
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .font(.system(size: 11))
+                    }
+
                     // Test connection + fetch models
                     HStack(spacing: 8) {
                         Text(" ")
@@ -504,16 +612,13 @@ struct ProviderCard: View {
     }
 
     /// Derive the models listing path from the chat completions api_path.
-    /// e.g. "/v2/chat/completions" → "/v2/models", "/v1/chat/completions" → "/v1/models"
     private var modelsPath: String {
         if let apiPath = provider.options["api_path"], !apiPath.isEmpty {
-            // Replace the last path component ("chat/completions") with "models"
             var parts = apiPath.split(separator: "/")
             if parts.count >= 2, parts.suffix(2).joined(separator: "/") == "chat/completions" {
                 parts.removeLast(2)
                 return "/" + parts.joined(separator: "/") + "/models"
             }
-            // Fallback: just replace the last segment
             if parts.count >= 1 {
                 parts.removeLast()
                 return "/" + parts.joined(separator: "/") + "/models"
@@ -560,7 +665,6 @@ struct ProviderCard: View {
                     isTesting = false
                 }
             } catch let error as ModelListService.ModelListError {
-                // If models endpoint returns 404, probe with a real chat request
                 if case .httpError(404) = error {
                     let apiPath = provider.options["api_path"] ?? "/v1/chat/completions"
                     let result = await modelService.probeEndpoint(
@@ -603,9 +707,6 @@ struct ProviderCard: View {
     }
 }
 
-// MARK: - Routing Rule Row
-
-
 // MARK: - Source Models
 
 private struct SourceModel: Identifiable {
@@ -614,32 +715,14 @@ private struct SourceModel: Identifiable {
     var id: String { pattern }
 }
 
-private enum SourceModels {
-    static let google: [SourceModel] = [
-        .init(pattern: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6"),
-        .init(pattern: "claude-opus-4-6", displayName: "Claude Opus 4.6"),
-        .init(pattern: "gpt-oss-120b", displayName: "GPT OSS 120B"),
-    ]
-    static let anthropic: [SourceModel] = [
-        .init(pattern: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6"),
-        .init(pattern: "claude-opus-4-6", displayName: "Claude Opus 4.6"),
-        .init(pattern: "claude-opus-4-8", displayName: "Claude Opus 4.8"),
-        .init(pattern: "claude-haiku-4-5-20251001", displayName: "Claude Haiku 4.5"),
-        .init(pattern: "claude-fable-5", displayName: "Claude Fable 5"),
-    ]
-
-    static func forSourceType(_ type: String?) -> [SourceModel] {
-        switch type {
-        case "google": return google
-        case "anthropic": return anthropic
-        default: return google + anthropic
-        }
-    }
-}
+private let sourceModels: [SourceModel] = [
+    .init(pattern: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6"),
+    .init(pattern: "claude-opus-4-6", displayName: "Claude Opus 4.6"),
+    .init(pattern: "gpt-oss-120b", displayName: "GPT OSS 120B"),
+]
 
 private func sourceModelDisplayName(for pattern: String) -> String {
-    let all = SourceModels.forSourceType(nil)
-    return all.first(where: { $0.pattern == pattern })?.displayName ?? pattern
+    sourceModels.first(where: { $0.pattern == pattern })?.displayName ?? pattern
 }
 
 struct RoutingRuleRow: View {
@@ -656,7 +739,7 @@ struct RoutingRuleRow: View {
                     rule.sourceDisplayName = sourceModelDisplayName(for: newValue)
                 }
             )) {
-                ForEach(SourceModels.forSourceType(rule.sourceType), id: \.pattern) { m in
+                ForEach(sourceModels, id: \.pattern) { m in
                     Text(m.displayName).tag(m.pattern)
                 }
             }
@@ -677,7 +760,9 @@ struct RoutingRuleRow: View {
                 },
                 set: { newID in
                     rule.targetProviderID = newID.isEmpty ? nil : newID
-                    if let provider = allProviders.first(where: { $0.id == newID && $0.enabled }),
+                    if newID == LLMRouterProviderID {
+                        rule.targetModel = nil
+                    } else if let provider = allProviders.first(where: { $0.id == newID && $0.enabled }),
                        !provider.models.isEmpty {
                         rule.targetModel = provider.models[0]
                     } else {
@@ -689,11 +774,18 @@ struct RoutingRuleRow: View {
                 ForEach(allProviders.filter(\.enabled)) { p in
                     Text(p.name).tag(p.id)
                 }
+                Divider()
+                Text("LLM Router").tag(LLMRouterProviderID)
             }
             .labelsHidden()
             .frame(width: 130)
 
-            if let pid = rule.targetProviderID,
+            if rule.targetProviderID == LLMRouterProviderID {
+                Text("关键词路由")
+                    .font(.caption)
+                    .foregroundStyle(.purple)
+                    .frame(width: 170)
+            } else if let pid = rule.targetProviderID,
                let provider = allProviders.first(where: { $0.id == pid && $0.enabled }) {
                 Picker("模型", selection: Binding(
                     get: { rule.targetModel ?? "" },
@@ -716,8 +808,89 @@ struct RoutingRuleRow: View {
             .iconButtonStyle()
             .help("删除此规则")
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
+    }
+}
+
+// MARK: - LLMRouter Rule Row
+
+struct LLMRouterRuleRow: View {
+    @Binding var rule: ModelRoutingConfig.LLMRouterRule
+    let allProviders: [ModelRoutingConfig.ProviderConfig]
+    @State private var keywordsText: String = ""
+    var onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // Keywords input
+            TextField("前端,React,Vue", text: $keywordsText)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .frame(width: 200)
+                .onChange(of: keywordsText) { newValue in
+                    rule.keywords = newValue
+                        .split(separator: ",")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                }
+
+            // Match mode
+            Picker("匹配模式", selection: $rule.matchMode) {
+                Text("任一").tag("any")
+                Text("全部").tag("all")
+            }
+            .labelsHidden()
+            .frame(width: 90)
+
+            // Target provider
+            Picker("厂家", selection: $rule.targetProviderID) {
+                Text("选择").tag("")
+                ForEach(allProviders.filter(\.enabled)) { p in
+                    Text(p.name).tag(p.id)
+                }
+                Divider()
+                Text("Gemini（内置）").tag(GeminiBuiltinProviderID)
+            }
+            .labelsHidden()
+            .frame(width: 120)
+
+            // Target model
+            if rule.targetProviderID == GeminiBuiltinProviderID {
+                Picker("模型", selection: $rule.targetModel) {
+                    Text("选择").tag("")
+                    ForEach(GeminiBuiltinModels) { m in
+                        Text(m.displayName).tag(m.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 160)
+            } else if let provider = allProviders.first(where: { $0.id == rule.targetProviderID && $0.enabled }) {
+                Picker("模型", selection: $rule.targetModel) {
+                    Text("选择").tag("")
+                    ForEach(provider.models, id: \.self) { m in
+                        Text(m).tag(m)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 160)
+            } else {
+                Spacer().frame(width: 160)
+            }
+
+            Button(action: onDelete) {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .iconButtonStyle()
+            .help("删除此规则")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 3)
+        .padding(.horizontal, 4)
+        .onAppear {
+            keywordsText = rule.keywords.joined(separator: ",")
+        }
     }
 }
 

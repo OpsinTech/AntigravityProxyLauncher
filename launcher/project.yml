@@ -39,6 +39,7 @@ targets:
           - CLI
           - Models
           - Services
+          - State
           - Utilities
     settings:
       base:
