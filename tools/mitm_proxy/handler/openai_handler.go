@@ -94,17 +94,42 @@ func (h *OpenAIHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		// Fallback: match rules without source_type restriction (wildcard)
 		rule = h.routingConfig.FindMatchingRule(modelDetect.Model, "")
 	}
-	if rule == nil {
+
+	var targetProviderID, targetModel string
+	if rule != nil {
+		targetProviderID, targetModel = h.routingConfig.ResolveLLMRouterTarget(rule, bodyBytes, "openai")
+	} else {
+		// Direct model match: check if requested model matches any enabled provider's model (e.g. CodeBuddy's glm-5.2)
+		for _, p := range h.routingConfig.Providers {
+			if !p.Enabled {
+				continue
+			}
+			for _, m := range p.Models {
+				if strings.EqualFold(m, modelDetect.Model) {
+					targetProviderID = p.ID
+					targetModel = m
+					break
+				}
+			}
+			if targetProviderID != "" {
+				break
+			}
+		}
+	}
+
+	if targetProviderID == "" || targetModel == "" {
+		log.Printf("[OpenAI] No route or enabled provider found for model: %s", modelDetect.Model)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
 
-	log.Printf("[OpenAI] Rule matched: %s -> %s @ %s", modelDetect.Model, rule.TargetModel, rule.TargetProviderID)
+	log.Printf("[OpenAI] Route matched: %s -> %s @ %s", modelDetect.Model, targetModel, targetProviderID)
 
-	// Look up provider
-	providerConfig := h.routingConfig.GetProvider(rule.TargetProviderID)
-	if providerConfig == nil || providerConfig.ApiKey == "" {
-		log.Printf("[OpenAI] Provider not configured: %s", rule.TargetProviderID)
+	// Look up provider. Local model servers (ollama / vllm / llama.cpp) often
+	// need no API key, so only a missing provider entry blocks routing here.
+	providerConfig := h.routingConfig.GetProvider(targetProviderID)
+	if providerConfig == nil {
+		log.Printf("[OpenAI] Provider not configured: %s", targetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
@@ -117,22 +142,22 @@ func (h *OpenAIHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		return r, nil
 	}
 
-	p, err := h.providerRegistry.GetProvider(rule.TargetProviderID)
+	p, err := h.providerRegistry.GetProvider(targetProviderID)
 	if err != nil {
-		log.Printf("[OpenAI] Provider not found: %s", rule.TargetProviderID)
+		log.Printf("[OpenAI] Provider not found: %s", targetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
 
 	// Translate request
-	providerReq, err := trans.TranslateRequest(bodyBytes, rule.TargetModel)
+	providerReq, err := trans.TranslateRequest(bodyBytes, targetModel)
 	if err != nil {
 		log.Printf("[OpenAI] Translation failed: %v", err)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
 
-	log.Printf("[OpenAI] Translating %s -> %s (provider: %s)", modelDetect.Model, rule.TargetModel, rule.TargetProviderID)
+	log.Printf("[OpenAI] Translating %s -> %s (provider: %s)", modelDetect.Model, targetModel, targetProviderID)
 
 	if providerReq.Stream {
 		streamCtx, streamCancel := context.WithTimeout(context.Background(), 5*time.Minute)

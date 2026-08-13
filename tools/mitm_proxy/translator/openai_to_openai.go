@@ -3,6 +3,7 @@ package translator
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/provider"
 )
@@ -26,23 +27,139 @@ func (t *OpenAIToOpenAI) CanTranslate(source, target string) bool {
 
 // TranslateRequest converts an OpenAI-format request body to a ProviderRequest,
 // substituting the target model name.
+// For same-format (OpenAI→OpenAI) passthrough, preserves the original request body
+// structure including content format, tool definitions, and other fields — only the
+// model name is replaced. This avoids data loss from stripping multimodal content
+// arrays or discarding unknown fields.
 func (t *OpenAIToOpenAI) TranslateRequest(sourceReq []byte, targetModel string) (*provider.ProviderRequest, error) {
-	var oaiReq struct {
-		Model    string            `json:"model"`
-		Messages []provider.Message `json:"messages"`
-		Stream   bool              `json:"stream"`
-		Tools    []provider.Tool   `json:"tools,omitempty"`
-	}
-	if err := json.Unmarshal(sourceReq, &oaiReq); err != nil {
+	// For same-format passthrough, preserve the raw request body.
+	// Only substitute the model name; everything else passes through as-is.
+	// Use a generic map to preserve all fields, then marshal back.
+	var rawReq map[string]interface{}
+	if err := json.Unmarshal(sourceReq, &rawReq); err != nil {
 		return nil, fmt.Errorf("failed to parse OpenAI request: %w", err)
+	}
+
+	// Extract messages for the ProviderRequest (needed for LLMRouter keyword matching)
+	messages := extractMessagesForRouting(rawReq)
+
+	// Extract tools
+	var tools []provider.Tool
+	if rawTools, ok := rawReq["tools"]; ok {
+		toolsBytes, _ := json.Marshal(rawTools)
+		json.Unmarshal(toolsBytes, &tools)
+	}
+
+	// Extract stream flag
+	stream := false
+	if s, ok := rawReq["stream"]; ok {
+		if b, ok := s.(bool); ok {
+			stream = b
+		}
+	}
+
+	// Build the raw body with model name substituted for same-format passthrough.
+	// This preserves all original fields (temperature, max_tokens, etc.)
+	// and content format (string vs array) that would be lost in struct marshaling.
+	rawReq["model"] = targetModel
+	rawBody, err := json.Marshal(rawReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal passthrough request: %w", err)
 	}
 
 	return &provider.ProviderRequest{
 		Model:    targetModel,
-		Messages: oaiReq.Messages,
-		Stream:   oaiReq.Stream,
-		Tools:    oaiReq.Tools,
+		Messages: messages,
+		Stream:   stream,
+		Tools:    tools,
+		RawBody:  rawBody,
 	}, nil
+}
+
+// extractMessagesForRouting extracts simplified messages from the raw request
+// for use by LLMRouter keyword matching. Only needs Role and text Content.
+func extractMessagesForRouting(rawReq map[string]interface{}) []provider.Message {
+	rawMsgs, ok := rawReq["messages"]
+	if !ok {
+		return nil
+	}
+	msgList, ok := rawMsgs.([]interface{})
+	if !ok {
+		return nil
+	}
+
+	messages := make([]provider.Message, 0, len(msgList))
+	for _, rawMsg := range msgList {
+		msgMap, ok := rawMsg.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		role, _ := msgMap["role"].(string)
+		content := extractContentFromRaw(msgMap["content"])
+		messages = append(messages, provider.Message{
+			Role:    role,
+			Content: content,
+		})
+	}
+	return messages
+}
+
+// extractContentFromRaw extracts text from a raw content field (string or array).
+func extractContentFromRaw(content interface{}) string {
+	if content == nil {
+		return ""
+	}
+	// String content
+	if s, ok := content.(string); ok {
+		return s
+	}
+	// Array content: [{"type":"text","text":"..."}, ...]
+	if arr, ok := content.([]interface{}); ok {
+		var texts []string
+		for _, item := range arr {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				if t, _ := itemMap["type"].(string); t == "text" {
+					if text, _ := itemMap["text"].(string); text != "" {
+						texts = append(texts, text)
+					}
+				}
+			}
+		}
+		return strings.Join(texts, "")
+	}
+	return ""
+}
+
+// extractContentText converts a content field that may be a plain string
+// or an array of content parts (multimodal format) into a plain string.
+func extractContentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	// Try plain string first
+	var str string
+	if json.Unmarshal(raw, &str) == nil {
+		return str
+	}
+
+	// Try array format: [{"type":"text","text":"..."}, ...]
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) != nil {
+		// Neither format matched, return raw as fallback
+		return string(raw)
+	}
+
+	var texts []string
+	for _, p := range parts {
+		if p.Type == "text" && p.Text != "" {
+			texts = append(texts, p.Text)
+		}
+	}
+	return strings.Join(texts, "")
 }
 
 // TranslateResponse converts a ProviderResponse back to OpenAI-format JSON,

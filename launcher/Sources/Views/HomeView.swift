@@ -170,7 +170,8 @@ private struct OverviewView: View {
                     
                     HStack(spacing: 12) {
                         HStack(spacing: 6) {
-                            let apps = TargetApp.allCases
+                            // 首页顶栏暂不展示 Claude Code / Codex 入口
+                            let apps = TargetApp.allCases.filter { $0 != .claudeCode && $0 != .codex }
                             ForEach(Array(apps.enumerated()), id: \.element.id) { idx, app in
                                 let isComingSoon = (app.sourceType == nil)
                                 Button(action: {
@@ -279,12 +280,6 @@ private struct OverviewView: View {
                                     }
                                 }
                             }
-                        }
-
-                        // Claude Code 纯代理模式（无需 dylib 注入）
-                        if appState.selectedApp == .claudeCode {
-                            ClaudeCodeProxyToggle()
-                                .padding(.top, 4)
                         }
 
                         // 代理未连接时提示
@@ -837,54 +832,3 @@ private struct MitmToggleRow: View {
     }
 }
 
-// MARK: - Claude Code Proxy Toggle
-
-private struct ClaudeCodeProxyToggle: View {
-    private let service = ClaudeCodeConfigService()
-    @State private var isEnabled = ClaudeCodeConfigService().isProxyEnabled()
-    @State private var statusMessage: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "bolt.horizontal.fill")
-                    .foregroundStyle(.purple)
-                    .font(.system(size: 12))
-                Text("Claude Code 代理模式")
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Toggle("", isOn: $isEnabled)
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .scaleEffect(0.8)
-                    .onChange(of: isEnabled) { newValue in
-                        if newValue {
-                            let ok = service.enableProxyMode()
-                            statusMessage = ok ? "已启用 — ANTHROPIC_BASE_URL → 127.0.0.1:18081" : "配置失败"
-                        } else {
-                            let ok = service.disableProxyMode()
-                            statusMessage = ok ? "已恢复默认配置" : "配置失败"
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { statusMessage = nil }
-                    }
-            }
-
-            Text("无需修复，直接通过环境变量将 Claude Code API 请求路由到本地代理。")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-
-            if let msg = statusMessage {
-                Text(msg)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.green)
-            }
-        }
-        .padding(12)
-        .background(Color.purple.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.purple.opacity(0.15), lineWidth: 1)
-        )
-    }
-}

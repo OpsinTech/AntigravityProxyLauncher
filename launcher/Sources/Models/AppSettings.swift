@@ -8,6 +8,7 @@ struct AppSettings: Codable, Equatable {
     var releaseIgnoredVersion: String
     var hideDockIcon: Bool
     var githubToken: String
+    var isActivated: Bool
 
     static let `default` = AppSettings(
         googleOAuthClientID: "",
@@ -16,7 +17,8 @@ struct AppSettings: Codable, Equatable {
         releaseFeedTrustedHosts: "github.com, api.github.com",
         releaseIgnoredVersion: "",
         hideDockIcon: false,
-        githubToken: ""
+        githubToken: "",
+        isActivated: false
     )
 
     enum CodingKeys: String, CodingKey {
@@ -27,6 +29,7 @@ struct AppSettings: Codable, Equatable {
         case releaseIgnoredVersion
         case hideDockIcon
         case githubToken
+        case isActivated = "diagnostic_reporting_opt_in"
     }
 
     init(
@@ -36,7 +39,8 @@ struct AppSettings: Codable, Equatable {
         releaseFeedTrustedHosts: String,
         releaseIgnoredVersion: String,
         hideDockIcon: Bool,
-        githubToken: String
+        githubToken: String,
+        isActivated: Bool
     ) {
         self.googleOAuthClientID = googleOAuthClientID
         self.googleOAuthClientSecret = googleOAuthClientSecret
@@ -45,6 +49,7 @@ struct AppSettings: Codable, Equatable {
         self.releaseIgnoredVersion = releaseIgnoredVersion
         self.hideDockIcon = hideDockIcon
         self.githubToken = githubToken
+        self.isActivated = isActivated
     }
 
     init(from decoder: Decoder) throws {
@@ -57,5 +62,6 @@ struct AppSettings: Codable, Equatable {
         releaseIgnoredVersion = try container.decodeIfPresent(String.self, forKey: .releaseIgnoredVersion) ?? ""
         hideDockIcon = try container.decodeIfPresent(Bool.self, forKey: .hideDockIcon) ?? false
         githubToken = try container.decodeIfPresent(String.self, forKey: .githubToken) ?? ""
+        isActivated = try container.decodeIfPresent(Bool.self, forKey: .isActivated) ?? false
     }
 }

@@ -27,16 +27,17 @@ struct ModelListService {
         authPrefix: String = "Bearer ",
         extraHeaders: [String: String] = [:]
     ) async throws -> [String] {
+        var scheme = "https"
         var host = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         // Strip trailing slash
         if host.hasSuffix("/") { host = String(host.dropLast()) }
-        // Strip protocol if present
+        // Strip protocol if present, remembering whether it was http
         if host.hasPrefix("https://") { host = String(host.dropFirst(8)) }
-        else if host.hasPrefix("http://") { host = String(host.dropFirst(7)) }
+        else if host.hasPrefix("http://") { host = String(host.dropFirst(7)); scheme = "http" }
 
         guard !host.isEmpty else { throw ModelListError.invalidEndpoint }
 
-        let urlString = "https://\(host)\(modelsPath)"
+        let urlString = "\(scheme)://\(host)\(modelsPath)"
         guard let url = URL(string: urlString) else { throw ModelListError.invalidEndpoint }
 
         var request = URLRequest(url: url)
@@ -72,14 +73,15 @@ struct ModelListService {
         authPrefix: String = "Bearer ",
         extraHeaders: [String: String] = [:]
     ) async -> (ok: Bool, message: String) {
+        var scheme = "https"
         var host = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         if host.hasSuffix("/") { host = String(host.dropLast()) }
         if host.hasPrefix("https://") { host = String(host.dropFirst(8)) }
-        else if host.hasPrefix("http://") { host = String(host.dropFirst(7)) }
+        else if host.hasPrefix("http://") { host = String(host.dropFirst(7)); scheme = "http" }
 
         guard !host.isEmpty else { return (false, "无效的 API 端点") }
 
-        let urlString = "https://\(host)\(apiPath)"
+        let urlString = "\(scheme)://\(host)\(apiPath)"
         guard let url = URL(string: urlString) else { return (false, "无效的 API 端点") }
 
         // Minimal streaming chat request to test connectivity

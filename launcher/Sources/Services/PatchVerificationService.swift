@@ -124,7 +124,7 @@ struct PatchVerificationService {
                         stderr: result.stderr
                     )
                 )
-            case .executableNotFound:
+            case .executableNotFound, .commandFailed:
                 throw PatchVerificationError.codeSignVerifyFailed(
                     .init(
                         command: commandText,
@@ -184,7 +184,7 @@ struct PatchVerificationService {
                         stderr: result.stderr
                     )
                 )
-            case .executableNotFound:
+            case .executableNotFound, .commandFailed:
                 throw PatchVerificationError.codeSignVerifyFailed(
                     .init(
                         command: commandText,

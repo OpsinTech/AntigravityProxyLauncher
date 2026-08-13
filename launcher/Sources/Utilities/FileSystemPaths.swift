@@ -126,22 +126,10 @@ enum FileSystemPaths {
             .appendingPathComponent(".config/antigravity/proxy_config.json")
     }
 
-    /// 模型路由配置（合并文件，供 Go proxy 读取），不随 activeApp 变化
+    /// 模型路由配置（单一文件，供 Go proxy 读取）
     static var userModelRoutingConfigFile: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/antigravity/model_routing.json")
-    }
-
-    /// Google 体系的模型映射配置
-    static var userModelRoutingConfigGoogleFile: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/antigravity/model_routing_google.json")
-    }
-
-    /// Anthropic 体系的模型映射配置
-    static var userModelRoutingConfigAnthropicFile: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/antigravity/model_routing_anthropic.json")
     }
 
     static let patchLogFile = FileManager.default.homeDirectoryForCurrentUser

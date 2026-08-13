@@ -1,9 +1,43 @@
 import Foundation
 
+/// LLMRouter 的虚拟 Provider ID，映射到此值时进入关键词路由子系统
+let LLMRouterProviderID = "llm_router"
+
+/// Gemini 内置 Provider ID：路由目标选择此值时，请求改 model 后直接走应用
+/// 自身的 Gemini 后端（透传），无需第三方 provider 配置或 API Key。
+let GeminiBuiltinProviderID = "gemini_builtin"
+
+/// 内置 Gemini 模型列表 —— 模型 ID 与显示名（来自 daily-cloudcode-pa fetchAvailableModels 真实响应）
+struct GeminiBuiltinModel: Identifiable, Hashable {
+    let id: String          // 实际 API model ID（后端要求的 ID）
+    let displayName: String // UI 展示名
+
+    init(_ id: String, _ displayName: String) {
+        self.id = id
+        self.displayName = displayName
+    }
+}
+
+/// 内置 Gemini 模型列表（2026-08 从 daily-cloudcode-pa.googleapis.com fetchAvailableModels 抓取的真实可用 ID）
+/// 注意：后端要求带后缀的 ID（-high/-low/-tiered/-agent 等），裸 ID（如 gemini-3.6-flash）会返回 404。
+let GeminiBuiltinModels: [GeminiBuiltinModel] = [
+    GeminiBuiltinModel("gemini-3.6-flash-high", "Gemini 3.6 Flash (High)"),
+    GeminiBuiltinModel("gemini-3.6-flash-tiered", "Gemini 3.6 Flash (Tiered)"),
+    GeminiBuiltinModel("gemini-3.6-flash-low", "Gemini 3.6 Flash (Low)"),
+    GeminiBuiltinModel("gemini-3-flash-agent", "Gemini 3.5 Flash (High)"),
+    GeminiBuiltinModel("gemini-3.5-flash-low", "Gemini 3.5 Flash (Medium)"),
+    GeminiBuiltinModel("gemini-3.1-pro-low", "Gemini 3.1 Pro (Low)"),
+    GeminiBuiltinModel("gemini-pro-agent", "Gemini 3.1 Pro (High)"),
+    GeminiBuiltinModel("gemini-3.1-flash-image", "Gemini 3.1 Flash Image"),
+    GeminiBuiltinModel("gemini-2.5-flash-lite", "Gemini 3.1 Flash Lite"),
+    GeminiBuiltinModel("gemini-2.5-pro", "Gemini 2.5 Pro"),
+]
+
 struct ModelRoutingConfig: Codable, Equatable {
     var version: String = "1.0"
     var providers: [ProviderConfig] = []
     var routingRules: [RoutingRule] = []
+    var llmRouter: LLMRouterConfig? = nil
 
     struct ProviderConfig: Codable, Equatable, Identifiable {
         var id: String
@@ -47,10 +81,45 @@ struct ModelRoutingConfig: Codable, Equatable {
         }
     }
 
+    /// LLMRouter 关键词路由规则
+    struct LLMRouterRule: Codable, Equatable, Identifiable {
+        var id: String = UUID().uuidString
+        var keywords: [String] = []
+        var matchMode: String = "any"  // "any" 或 "all"
+        var targetProviderID: String = ""
+        var targetModel: String = ""
+        var enabled: Bool = true
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case keywords
+            case matchMode = "match_mode"
+            case targetProviderID = "target_provider_id"
+            case targetModel = "target_model"
+            case enabled
+        }
+    }
+
+    /// LLMRouter 配置
+    struct LLMRouterConfig: Codable, Equatable {
+        var enabled: Bool = false
+        var defaultModel: String = ""
+        var defaultProviderID: String = ""
+        var rules: [LLMRouterRule] = []
+
+        enum CodingKeys: String, CodingKey {
+            case enabled
+            case defaultModel = "default_model"
+            case defaultProviderID = "default_provider_id"
+            case rules
+        }
+    }
+
     enum CodingKeys: String, CodingKey {
         case version
         case providers
         case routingRules = "routing_rules"
+        case llmRouter = "llm_router"
     }
 }
 
@@ -86,10 +155,17 @@ extension ModelRoutingConfig {
             models: [
                 "glm-5.2",
                 "glm-5.1",
-                "kimi-k2.7-code",
+                "glm-5.0",
+                "kimi-k3",
+                "kimi-k2.7",
                 "kimi-k2.6",
+                "kimi-k2.5",
+                "deepseek-v4-pro",
                 "deepseek-v4-flash",
-                "deepseek-v4-pro"
+                "deepseek-v3",
+                "deepseek-r1",
+                "hunyuan-chat",
+                "hy3"
             ],
             options: [
                 "api_path": "/v2/chat/completions"
@@ -125,66 +201,10 @@ extension ModelRoutingConfig {
         ),
     ]
 
-    /// Anthropic ecosystem (Claude Code) default routing rules.
-    static let defaultAnthropicRules: [RoutingRule] = [
-        RoutingRule(
-            sourceModelPattern: "claude-sonnet-4-6",
-            sourceDisplayName: "Claude Sonnet 4.6",
-            sourceType: "anthropic",
-            targetProviderID: "deepseek",
-            targetModel: "deepseek-v4-flash",
-            enabled: true
-        ),
-        RoutingRule(
-            sourceModelPattern: "claude-opus-4-6",
-            sourceDisplayName: "Claude Opus 4.6",
-            sourceType: "anthropic",
-            targetProviderID: "deepseek",
-            targetModel: "deepseek-v4-pro",
-            enabled: true
-        ),
-        RoutingRule(
-            sourceModelPattern: "claude-opus-4-8",
-            sourceDisplayName: "Claude Opus 4.8",
-            sourceType: "anthropic",
-            targetProviderID: "deepseek",
-            targetModel: "deepseek-v4-pro",
-            enabled: true
-        ),
-        RoutingRule(
-            sourceModelPattern: "claude-haiku-4-5-20251001",
-            sourceDisplayName: "Claude Haiku 4.5",
-            sourceType: "anthropic",
-            targetProviderID: "deepseek",
-            targetModel: "deepseek-v4-flash",
-            enabled: true
-        ),
-        RoutingRule(
-            sourceModelPattern: "claude-fable-5",
-            sourceDisplayName: "Claude Fable 5",
-            sourceType: "anthropic",
-            targetProviderID: "deepseek",
-            targetModel: "deepseek-v4-pro",
-            enabled: true
-        ),
-    ]
-
-    /// Merged default (used for backward compatibility / proxy merge).
+    /// Default config (Google ecosystem only).
     static let `default` = ModelRoutingConfig(
         providers: defaultProviders,
-        routingRules: defaultGoogleRules + defaultAnthropicRules
-    )
-
-    /// Google ecosystem default config.
-    static let defaultGoogle = ModelRoutingConfig(
-        providers: defaultProviders,
         routingRules: defaultGoogleRules
-    )
-
-    /// Anthropic ecosystem default config.
-    static let defaultAnthropic = ModelRoutingConfig(
-        providers: defaultProviders,
-        routingRules: defaultAnthropicRules
     )
 }
 
@@ -218,18 +238,4 @@ extension ModelRoutingConfig {
     /// Merge this config with another, producing a combined config suitable for the Go proxy.
     /// Providers are deduplicated by ID (keeping the first occurrence).
     /// Routing rules from both configs are concatenated.
-    func mergeWith(_ other: ModelRoutingConfig) -> ModelRoutingConfig {
-        var seenIDs = Set<String>()
-        var mergedProviders: [ProviderConfig] = []
-        for p in providers + other.providers {
-            if seenIDs.insert(p.id).inserted {
-                mergedProviders.append(p)
-            }
-        }
-        return ModelRoutingConfig(
-            version: version,
-            providers: mergedProviders,
-            routingRules: routingRules + other.routingRules
-        )
-    }
 }

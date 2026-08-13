@@ -88,9 +88,10 @@ struct AccountStoreService {
     private func saveStore(_ store: AccountStorePayload) throws {
         try FileSystemPaths.ensureRuntimeDirectoriesExist()
         let data = try encoder.encode(store)
-        // Atomic write: write to temp file then rename, prevents corruption on crash
+        // Atomic write: write to temp file then replace, prevents corruption on crash
         let tempURL = accountsFileURL.appendingPathExtension("tmp")
         try data.write(to: tempURL, options: .atomic)
-        try FileManager.default.replaceItemAt(accountsFileURL, withItemAt: tempURL, backupItemName: nil, resultingItemURL: nil)
+        try? FileManager.default.removeItem(at: accountsFileURL)
+        try FileManager.default.moveItem(at: tempURL, to: accountsFileURL)
     }
 }

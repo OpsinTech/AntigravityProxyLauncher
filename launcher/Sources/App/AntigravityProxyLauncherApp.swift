@@ -66,6 +66,14 @@ struct AntigravityProxyLauncherApp: App {
                 .environmentObject(appState)
                 .environmentObject(authViewModel)
                 .frame(minWidth: 820, minHeight: 560)
+                .sheet(isPresented: Binding(
+                    get: { !appState.isActivated },
+                    set: { _ in }
+                )) {
+                    ActivationView()
+                        .environmentObject(appState)
+                        .interactiveDismissDisabled(true)
+                }
         }
 
         MenuBarExtra {
@@ -292,42 +300,34 @@ class ProxyManager {
     }
 
     func restartProxy() {
+        // Prevent auto-restart during shutdown/restart
+        isShuttingDown = true
+
         // 1. Kill our own process first (by PID if we have it)
         if let p = process, p.isRunning {
             p.terminate()
             p.waitUntilExit()
         }
-        
-        // 2. Clean up any stale mitm_proxy on our port (only if port still in use)
+
+        // 2. Clean up any remaining mitm_proxy on our port
         if isProxyPortInUse() {
             let killTask = Process()
-            killTask.launchPath = "/usr/bin/lsof"
-            killTask.arguments = ["-ti", ":\(proxyPort)"]
-            let pipe = Pipe()
-            killTask.standardOutput = pipe
+            killTask.launchPath = "/usr/bin/pkill"
+            killTask.arguments = ["-9", "-f", "mitm_proxy"]
             killTask.launch()
             killTask.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let pids = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !pids.isEmpty {
-                for pid in pids.split(separator: "\n") {
-                    let killPID = Process()
-                    killPID.launchPath = "/bin/kill"
-                    killPID.arguments = ["-9", String(pid)]
-                    killPID.launch()
-                    killPID.waitUntilExit()
-                }
-            }
         }
 
-        // 3. Wait for port to be free
-        let deadline = Date().addingTimeInterval(3)
+        // 3. Wait for port to be free (up to 5 seconds)
+        let deadline = Date().addingTimeInterval(5)
         while Date() < deadline {
             if !isProxyPortInUse() { break }
-            Thread.sleep(forTimeInterval: 0.2)
+            Thread.sleep(forTimeInterval: 0.3)
         }
 
         // 4. Start fresh
         process = nil
+        isShuttingDown = false
         startProxy()
     }
 
@@ -336,29 +336,10 @@ class ProxyManager {
             p.terminate()
             p.waitUntilExit()
         }
-        // Clean up any remaining process on our port
-        if isProxyPortInUse() {
-            let killTask = Process()
-            killTask.launchPath = "/usr/bin/lsof"
-            killTask.arguments = ["-ti", ":\(proxyPort)"]
-            let pipe = Pipe()
-            killTask.standardOutput = pipe
-            killTask.launch()
-            killTask.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let pids = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !pids.isEmpty {
-                for pid in pids.split(separator: "\n") {
-                    let killPID = Process()
-                    killPID.launchPath = "/bin/kill"
-                    killPID.arguments = ["-9", String(pid)]
-                    killPID.launch()
-                    killPID.waitUntilExit()
-                }
-            }
-        }
         process = nil
         LauncherLogger.info("Go MITM Proxy stopped")
     }
+
 
     private func isProxyPortInUse() -> Bool {
         let sock = socket(AF_INET, SOCK_STREAM, 0)
