@@ -65,7 +65,8 @@ type OpenAIStreamResponse struct {
 
 // OpenAIStreamChoice represents a choice in a streaming response
 type OpenAIStreamChoice struct {
-	Delta OpenAIDelta `json:"delta"`
+	Delta        OpenAIDelta `json:"delta"`
+	FinishReason string      `json:"finish_reason"`
 }
 
 // OpenAIDelta represents a delta in a streaming response
@@ -500,8 +501,9 @@ func (p *OpenAIProvider) processStream(ctx context.Context, body io.ReadCloser, 
 
 		delta := streamResp.Choices[0].Delta
 		chunk := StreamChunk{
-			Delta:     delta.Content,
-			ToolCalls: delta.ToolCalls,
+			Delta:        delta.Content,
+			ToolCalls:    delta.ToolCalls,
+			FinishReason: streamResp.Choices[0].FinishReason,
 		}
 
 		if streamResp.Usage != nil {

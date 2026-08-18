@@ -39,15 +39,33 @@ type FunctionDef struct {
 }
 
 // ToolCall represents a tool call from the model.
+//
+// Index carries the OpenAI streaming protocol's tool-call index, which
+// distinguishes parallel tool calls in the same delta. It must NOT be
+// omitempty (index 0 is meaningful) and must survive the round-trip: a
+// downstream consumer (e.g. DSH's llm-deepseek translate.ts) groups tool-call
+// deltas by `call.index`; if the index is dropped, every parallel tool call
+// merges into ONE block — arguments concatenate across tools, ids/names
+// overwrite each other, producing `unknown tool ""` and invalid arguments.
+//
+// Id/Type/Function.Name carry omitempty so a streaming delta that only
+// fragments arguments (OpenAI streaming protocol: the id/name arrive on the
+// first chunk and are ABSENT on subsequent argument-only chunks) serializes
+// with those fields OMITTED rather than as explicit empty strings. A
+// downstream consumer that checks `field !== undefined` to decide "this chunk
+// supplied the field" (e.g. DSH's llm-deepseek translate.ts) would otherwise
+// treat "" as a real value and overwrite the id/name already set by the first
+// chunk — producing `unknown tool ""` and duplicate empty tool_call_ids.
 type ToolCall struct {
-	Id       string       `json:"id"`
-	Type     string       `json:"type"`
+	Index    int          `json:"index"`
+	Id       string       `json:"id,omitempty"`
+	Type     string       `json:"type,omitempty"`
 	Function ToolFunction `json:"function"`
 }
 
 // ToolFunction holds the function call details.
 type ToolFunction struct {
-	Name      string `json:"name"`
+	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments"`
 }
 
@@ -82,11 +100,12 @@ type ProviderResponse struct {
 
 // StreamChunk represents a single chunk from a streaming response.
 type StreamChunk struct {
-	Delta     string     `json:"delta"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-	Usage     *Usage     `json:"usage,omitempty"`
-	Done      bool       `json:"done"`
-	Error     error      `json:"-"`
+	Delta        string     `json:"delta"`
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`
+	Usage        *Usage     `json:"usage,omitempty"`
+	FinishReason string     `json:"finish_reason,omitempty"`
+	Done         bool       `json:"done"`
+	Error        error      `json:"-"`
 }
 
 // Provider defines the interface for an AI API provider.

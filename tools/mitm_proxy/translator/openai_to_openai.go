@@ -198,7 +198,34 @@ func (t *OpenAIToOpenAI) TranslateResponse(resp *provider.ProviderResponse, sour
 // using the source model name.
 func (t *OpenAIToOpenAI) TranslateStreamChunk(chunk *provider.StreamChunk, sourceModel string, state *StreamState) ([]byte, error) {
 	if chunk.Done {
-		return []byte("data: [DONE]\n\n"), nil
+		// OpenAI's streaming protocol terminates with a chunk carrying a
+		// non-empty finish_reason before [DONE]. Strict clients (e.g. pi-ai)
+		// treat a stream that ends without one as truncated, so always emit
+		// the terminal chunk first. Echo the upstream finish_reason when the
+		// provider sent one (stop/tool_calls/length); default to "stop" for
+		// upstreams that end with bare [DONE].
+		finishReason := chunk.FinishReason
+		if finishReason == "" {
+			finishReason = "stop"
+		}
+		oaiChunk := map[string]interface{}{
+			"id":      "chatcmpl-" + sourceModel,
+			"object":  "chat.completion.chunk",
+			"model":   sourceModel,
+			"choices": []map[string]interface{}{
+				{
+					"index":         0,
+					"delta":         map[string]interface{}{},
+					"finish_reason": finishReason,
+				},
+			},
+		}
+		data, err := json.Marshal(oaiChunk)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal terminal SSE chunk: %w", err)
+		}
+		events := append([]byte("data: "), append(data, '\n', '\n')...)
+		return append(events, []byte("data: [DONE]\n\n")...), nil
 	}
 
 	if chunk.Error != nil {
