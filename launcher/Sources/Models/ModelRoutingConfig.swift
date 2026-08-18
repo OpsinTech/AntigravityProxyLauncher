@@ -18,18 +18,30 @@ struct GeminiBuiltinModel: Identifiable, Hashable {
     }
 }
 
-/// 内置 Gemini 模型列表（2026-08 从 daily-cloudcode-pa.googleapis.com fetchAvailableModels 抓取的真实可用 ID）
-/// 注意：后端要求带后缀的 ID（-high/-low/-tiered/-agent 等），裸 ID（如 gemini-3.6-flash）会返回 404。
+/// 内置 Gemini 模型列表（2026-08-18 从 daily-cloudcode-pa.googleapis.com fetchAvailableModels 抓取的真实可用 ID）
+/// 注意：后端要求带后缀的 ID（-high/-low/-medium/-tiered/-agent 等），裸 ID（如 gemini-3.6-flash）会返回 404。
+/// 显示名直接取自 fetchAvailableModels 响应的 display name（个别为 "-" 的 tiered 模型按同族命名）。
 let GeminiBuiltinModels: [GeminiBuiltinModel] = [
+    GeminiBuiltinModel("gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"),
+    GeminiBuiltinModel("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)"),
+    GeminiBuiltinModel("gemini-3.7-flash-medium", "Gemini 3.7 Flash (Medium)"),
+    GeminiBuiltinModel("gemini-3.7-flash-tiered", "Gemini 3.7 Flash (Tiered)"),
     GeminiBuiltinModel("gemini-3.6-flash-high", "Gemini 3.6 Flash (High)"),
-    GeminiBuiltinModel("gemini-3.6-flash-tiered", "Gemini 3.6 Flash (Tiered)"),
     GeminiBuiltinModel("gemini-3.6-flash-low", "Gemini 3.6 Flash (Low)"),
-    GeminiBuiltinModel("gemini-3-flash-agent", "Gemini 3.5 Flash (High)"),
+    GeminiBuiltinModel("gemini-3.6-flash-medium", "Gemini 3.6 Flash (Medium)"),
+    GeminiBuiltinModel("gemini-3.6-flash-tiered", "Gemini 3.6 Flash (Tiered)"),
+    GeminiBuiltinModel("gemini-3.5-flash-extra-low", "Gemini 3.5 Flash (Low)"),
     GeminiBuiltinModel("gemini-3.5-flash-low", "Gemini 3.5 Flash (Medium)"),
+    GeminiBuiltinModel("gemini-3-flash-agent", "Gemini 3.5 Flash (High)"),
+    GeminiBuiltinModel("gemini-3-flash", "Gemini 3 Flash"),
+    GeminiBuiltinModel("gemini-3.1-pro-high", "Gemini 3.1 Pro (High)"),
     GeminiBuiltinModel("gemini-3.1-pro-low", "Gemini 3.1 Pro (Low)"),
     GeminiBuiltinModel("gemini-pro-agent", "Gemini 3.1 Pro (High)"),
     GeminiBuiltinModel("gemini-3.1-flash-image", "Gemini 3.1 Flash Image"),
+    GeminiBuiltinModel("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite"),
+    GeminiBuiltinModel("gemini-2.5-flash", "Gemini 3.1 Flash Lite"),
     GeminiBuiltinModel("gemini-2.5-flash-lite", "Gemini 3.1 Flash Lite"),
+    GeminiBuiltinModel("gemini-2.5-flash-thinking", "Gemini 3.1 Flash Lite"),
     GeminiBuiltinModel("gemini-2.5-pro", "Gemini 2.5 Pro"),
 ]
 

@@ -156,6 +156,10 @@ func (c *RoutingConfig) GetLLMRouterDefault() (providerID string, model string) 
 // If it does, it resolves the actual provider+model via keyword matching
 // (falling back to the LLMRouter default). If the rule targets a concrete
 // provider, the original values are returned unchanged.
+// gemini_builtin is honored only for Gemini-format requests: it carries the
+// IDE's Google auth and Gemini wrapped format, so exposing it to OpenAI- or
+// Anthropic-format clients would end in "provider not configured". Those
+// formats skip such keyword matches and fall through to the default.
 // Returns empty strings if LLMRouter resolution fails (no match + no default),
 // signaling the caller to passthrough.
 func (c *RoutingConfig) ResolveLLMRouterTarget(rule *RoutingRule, bodyBytes []byte, format string) (providerID string, model string) {
@@ -168,8 +172,13 @@ func (c *RoutingConfig) ResolveLLMRouterTarget(rule *RoutingRule, bodyBytes []by
 	content := ExtractLatestUserContent(bodyBytes, format)
 	log.Printf("[LLMRouter] Resolving target from latest user message, length=%d", len(content))
 	if matched := c.FindLLMRouterMatch(content); matched != nil {
-		log.Printf("[LLMRouter] Keyword match -> provider=%s model=%s", matched.TargetProviderID, matched.TargetModel)
-		return matched.TargetProviderID, matched.TargetModel
+		if matched.TargetProviderID == GeminiBuiltinProviderID && format != "gemini" {
+			log.Printf("[LLMRouter] Keyword match %q targets %s (IDE-only), skipping for %s-format request, using default",
+				matched.Keywords, GeminiBuiltinProviderID, format)
+		} else {
+			log.Printf("[LLMRouter] Keyword match -> provider=%s model=%s", matched.TargetProviderID, matched.TargetModel)
+			return matched.TargetProviderID, matched.TargetModel
+		}
 	}
 	defProvider, defModel := c.GetLLMRouterDefault()
 	if defProvider != "" && defModel != "" {
