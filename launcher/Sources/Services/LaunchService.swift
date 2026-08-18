@@ -1,6 +1,9 @@
 import Foundation
 import AppKit
 import Darwin
+import OSLog
+
+private let log = Logger(subsystem: "com.antigravity.proxylauncher", category: "Launch")
 
 enum LaunchError: LocalizedError {
     case cliSmokeTestFailed(String)
@@ -40,6 +43,12 @@ final class LaunchService {
                   terminatedApp.processIdentifier == pid else { return }
             self.activeAppPID = nil
             self.onAppTerminated?()
+        }
+
+        // P1: proactively ensure a valid combined CA bundle at Launcher startup (silent), so the
+        // target app gets a correct bundle on first launch instead of hitting a stale/partial one.
+        Task.detached(priority: .utility) { [weak self] in
+            self?.ensureCombinedCABundle(env: nil)
         }
     }
 
@@ -106,44 +115,14 @@ final class LaunchService {
             .appendingPathComponent(".config/antigravity/combined_ca.pem").path
         env["NODE_EXTRA_CA_CERTS"] = caCertPath
 
-        // Regenerate combined CA only when needed (goproxy CA newer than combined, or combined missing)
-        let needRegen: Bool = {
-            guard let goproxyAttrs = try? FileManager.default.attributesOfItem(atPath: caCertPath),
-                  let goproxyMod = goproxyAttrs[.modificationDate] as? Date else { return true }
-            guard let combinedAttrs = try? FileManager.default.attributesOfItem(atPath: combinedCAPath),
-                  let combinedMod = combinedAttrs[.modificationDate] as? Date else { return true }
-            return goproxyMod > combinedMod
-        }()
-
-        if needRegen, let goproxyCA = try? String(contentsOfFile: caCertPath, encoding: .utf8) {
-            // Prefer /etc/ssl/cert.pem (available on Macs with Homebrew or Xcode CLT).
-            // Fall back to extracting system roots from the macOS keychain via security(1),
-            // which works on every Mac, clean or otherwise.
-            var combined: String?
-            if let systemCA = try? String(contentsOfFile: "/etc/ssl/cert.pem", encoding: .utf8) {
-                combined = systemCA + "\n" + goproxyCA
-            } else {
-                // Extract system roots from keychain (works on any macOS system)
-                let result = try? CommandRunner.run("/usr/bin/security", [
-                    "find-certificate", "-a", "-p",
-                    "/System/Library/Keychains/SystemRootCertificates.keychain"
-                ])
-                if let systemCerts = result?.stdout, !systemCerts.isEmpty {
-                    combined = systemCerts + "\n" + goproxyCA
-                }
-            }
-
-            if let combined = combined {
-                try? combined.write(toFile: combinedCAPath, atomically: true, encoding: .utf8)
-            }
-        }
-
-        // Prefer combined; fall back to goproxy-only if combined doesn't exist (first run race)
-        if FileManager.default.fileExists(atPath: combinedCAPath) {
-            env["SSL_CERT_FILE"] = combinedCAPath
-        } else {
-            env["SSL_CERT_FILE"] = caCertPath
-        }
+        // Ensure a valid combined CA bundle exists (system roots + goproxy CA) and inject it via
+        // SSL_CERT_FILE. SSL_CERT_FILE REPLACES Go's entire trust store (it is not additive): if it
+        // points at the goproxy CA alone, every real HTTPS endpoint (e.g. oauth2.googleapis.com)
+        // fails with "x509: certificate signed by unknown authority". So we must always build a
+        // bundle of SYSTEM roots + goproxy CA; if the system roots cannot be obtained we leave
+        // SSL_CERT_FILE unset so Go falls back to the OS trust store (strictly safer than a
+        // goproxy-only bundle). Detailed steps are logged for diagnostics.
+        ensureCombinedCABundle(env: &env)
 
         config.environment = env
         config.createsNewApplicationInstance = true
@@ -159,6 +138,133 @@ final class LaunchService {
         } catch {
             throw LaunchError.appBundleLaunchFailed("启动失败: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Combined CA bundle management
+
+    /// Validate a combined CA bundle: must exist and contain at least 2 certificates
+    /// (the system roots plus the goproxy CA). A stale/partial bundle that only contains
+    /// the goproxy CA must never be trusted.
+    private func combinedBundleIsValid(_ path: String) -> Bool {
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
+        let count = content.components(separatedBy: "-----BEGIN CERTIFICATE-----").count - 1
+        return count >= 2
+    }
+
+    /// Ensure a valid combined CA bundle (system root CAs + goproxy CA) exists.
+    ///
+    /// When `env` is non-nil, injects `SSL_CERT_FILE` into it (launch path). When nil, the
+    /// method only ensures/regenerates the bundle on disk (silent startup pre-check).
+    ///
+    /// SSL_CERT_FILE REPLACES Go's entire trust store (not additive). If we cannot obtain the
+    /// system root CAs we MUST NOT set SSL_CERT_FILE at all — leaving it unset lets Go fall back
+    /// to the OS trust store, which is strictly safer than pointing it at a goproxy-only bundle
+    /// (which breaks every real HTTPS, e.g. oauth2.googleapis.com → "x509: unknown authority").
+    ///
+    /// Every resolution step is logged so field issues can be diagnosed from the Launcher log
+    /// (which source supplied the roots, how many certs, and whether the bundle is valid).
+    private func ensureCombinedCABundle(env: inout [String: String]?) {
+        let caCertPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/antigravity/goproxy_ca.pem").path
+        let combinedCAPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/antigravity/combined_ca.pem").path
+
+        // Only regenerate when the bundle is missing or invalid. We never reuse a partial bundle
+        // just because its mtime is newer than the goproxy CA.
+        let needRegen = !FileManager.default.fileExists(atPath: combinedCAPath)
+            || !combinedBundleIsValid(combinedCAPath)
+        if needRegen {
+            log.info("[Launch] Combined CA bundle missing or invalid; (re)generating (path=\(combinedCAPath))")
+        }
+
+        if needRegen, let goproxyCA = try? String(contentsOfFile: caCertPath, encoding: .utf8) {
+            // Collect system root CAs from as many sources as possible, in priority order:
+            //   1. /etc/ssl/cert.pem            (Homebrew / Xcode CLT; absent on clean Macs)
+            //   2. System keychain roots        (every macOS, clean or otherwise)
+            //   3. Login keychain roots         (user-installed / enterprise roots)
+            var systemRoots = ""
+            var source = "none"
+
+            if let systemCA = try? String(contentsOfFile: "/etc/ssl/cert.pem", encoding: .utf8),
+               !systemCA.isEmpty {
+                systemRoots = systemCA
+                source = "/etc/ssl/cert.pem"
+            } else {
+                log.info("[Launch] /etc/ssl/cert.pem unavailable (no Xcode CLT/Homebrew); falling back to keychain")
+                // Run security directly (not via CommandRunner, which throws on non-zero exit) so a
+                // non-zero status does not silently abort root extraction.
+                systemRoots = runSecurityFindCerts(keychain: "/System/Library/Keychains/SystemRootCertificates.keychain")
+                if !systemRoots.isEmpty {
+                    source = "SystemRootCertificates.keychain"
+                }
+            }
+
+            // Supplement (or fall back to) the login keychain for user/enterprise-installed roots.
+            if systemRoots.isEmpty {
+                let loginRoots = runSecurityFindCerts(keychain: "\(NSHomeDirectory())/Library/Keychains/login.keychain-db")
+                if !loginRoots.isEmpty {
+                    systemRoots = loginRoots
+                    source = "login.keychain-db"
+                }
+            } else {
+                let loginRoots = runSecurityFindCerts(keychain: "\(NSHomeDirectory())/Library/Keychains/login.keychain-db")
+                if !loginRoots.isEmpty {
+                    systemRoots += "\n" + loginRoots
+                    source += " + login.keychain-db"
+                }
+            }
+
+            let rootCount = systemRoots.components(separatedBy: "-----BEGIN CERTIFICATE-----").count - 1
+            log.info("[Launch] System root CAs obtained: source=\(source) count=\(rootCount)")
+
+            if !systemRoots.isEmpty {
+                let combined = systemRoots + "\n" + goproxyCA
+                do {
+                    try combined.write(toFile: combinedCAPath, atomically: true, encoding: .utf8)
+                    log.info("[Launch] Combined CA bundle written (path=\(combinedCAPath))")
+                } catch {
+                    log.error("[Launch] Failed to write combined CA bundle: \(error.localizedDescription)")
+                }
+            } else {
+                // No system roots obtainable — do NOT write a goproxy-only bundle. See note above.
+                log.error("[Launch] Could not obtain system root CAs from any source; SSL_CERT_FILE left unset so Go uses the OS trust store")
+            }
+        }
+
+        // Inject SSL_CERT_FILE only when we have a VALID combined bundle. Otherwise leave it unset
+        // so Go verifies against the system store.
+        if combinedBundleIsValid(combinedCAPath) {
+            env?["SSL_CERT_FILE"] = combinedCAPath
+            log.info("[Launch] SSL_CERT_FILE set -> \(combinedCAPath)")
+        } else {
+            log.warning("[Launch] No valid combined CA bundle; SSL_CERT_FILE left unset (Go uses OS trust store)")
+        }
+    }
+
+    /// Run `security find-certificate -a -p <keychain>` and return its PEM output.
+    /// Uses Process directly so a non-zero exit does not throw (unlike CommandRunner).
+    private func runSecurityFindCerts(keychain: String) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["find-certificate", "-a", "-p", keychain]
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            log.error("[Launch] security find-certificate failed for \(keychain): \(error.localizedDescription)")
+            return ""
+        }
+        if process.terminationStatus != 0 {
+            let msg = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            log.error("[Launch] security find-certificate exited \(process.terminationStatus) for \(keychain)\(msg.isEmpty ? "" : ": \(msg)")")
+            return ""
+        }
+        return String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
     }
 
     /// 清理应用的隔离属性，避免每次启动都需要输入密码
