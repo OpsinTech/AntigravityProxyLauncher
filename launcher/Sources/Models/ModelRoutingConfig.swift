@@ -51,6 +51,23 @@ struct ModelRoutingConfig: Codable, Equatable {
     var routingRules: [RoutingRule] = []
     var llmRouter: LLMRouterConfig? = nil
 
+    /// 确保内置服务商（DeepSeek / OfoxAI / CodeBuddy / TokenRouter）及三个本地模型服务（Ollama / vLLM / LM Studio）始终存在。
+    /// 按 id 前缀去重：若用户已配置过，不再重复添加，因此不会覆盖用户在卡片里修改的 endpoint / 启用状态。
+    mutating func ensureBuiltinLocalProviders() {
+        for defaultP in Self.defaultProviders {
+            if !providers.contains(where: { $0.id == defaultP.id }) {
+                providers.append(defaultP)
+            }
+        }
+        for kind in LocalModelServiceKind.allCases {
+            let prefix = "local-\(kind.rawValue)-"
+            let exists = providers.contains { $0.id.hasPrefix(prefix) }
+            if !exists {
+                providers.append(ProviderConfig.localTemplate(kind))
+            }
+        }
+    }
+
     struct ProviderConfig: Codable, Equatable, Identifiable {
         var id: String
         var name: String
@@ -70,6 +87,65 @@ struct ModelRoutingConfig: Codable, Equatable {
             case apiKey = "api_key"
             case models
             case options
+        }
+
+        /// 本地模型服务模板（ollama / vLLM / LM Studio）。
+        /// 三者均暴露 OpenAI 兼容接口，type 统一为 "openai"，默认开启 auto_models
+        /// 自动从 /v1/models 同步模型列表（不写死模型名，避免与本地实际加载不一致）。
+        static func localTemplate(_ kind: LocalModelServiceKind) -> ModelRoutingConfig.ProviderConfig {
+            ModelRoutingConfig.ProviderConfig(
+                id: "local-\(kind.rawValue)-\(UUID().uuidString.prefix(8))",
+                name: kind.displayName,
+                enabled: false,
+                type: "openai",
+                apiEndpoint: kind.defaultEndpoint,
+                apiKey: "",
+                models: [],
+                options: ["auto_models": "true"]
+            )
+        }
+    }
+
+    /// 支持通过 UI 一键添加的本地模型服务类型。
+    /// 均为 OpenAI 兼容，复用 openai provider（http scheme + auto_models）。
+    enum LocalModelServiceKind: String, CaseIterable, Identifiable {
+        case ollama
+        case vllm
+        case lmstudio
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .ollama:   return "Ollama"
+            case .vllm:     return "vLLM"
+            case .lmstudio: return "LM Studio"
+            }
+        }
+
+        /// 默认暴露的本地接入点（OpenAI 兼容 /v1/chat/completions）
+        var defaultEndpoint: String {
+            switch self {
+            case .ollama:   return "http://localhost:11434"
+            case .vllm:     return "http://localhost:8000"
+            case .lmstudio: return "http://localhost:1234"
+            }
+        }
+
+        var website: URL? {
+            switch self {
+            case .ollama:   return URL(string: "https://ollama.com")
+            case .vllm:     return URL(string: "https://docs.vllm.ai")
+            case .lmstudio: return URL(string: "https://lmstudio.ai")
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .ollama:   return "server.rack"
+            case .vllm:     return "cpu"
+            case .lmstudio: return "slider.horizontal.3"
+            }
         }
     }
 
@@ -177,10 +253,62 @@ extension ModelRoutingConfig {
                 "deepseek-v3",
                 "deepseek-r1",
                 "hunyuan-chat",
-                "hy3"
+                "hy3",
+                "hy4-preview"
+                // TODO: 限免版 hy4 模型 ID 待确认后在此追加（例如 hy4-preview-free / hy4-xxx）
             ],
             options: [
                 "api_path": "/v2/chat/completions"
+            ]
+        ),
+        ProviderConfig(
+            id: "tokenrouter",
+            name: "TokenRouter",
+            enabled: false,
+            apiEndpoint: "api.tokenrouter.com",
+            apiKey: "",
+            models: [
+                "anthropic/claude-sonnet-4-6",
+                "anthropic/claude-opus-4-6",
+                "anthropic/claude-3-7-sonnet",
+                "anthropic/claude-3-5-sonnet",
+                "deepseek/deepseek-chat",
+                "deepseek/deepseek-reasoner",
+                "openai/gpt-4o",
+                "openai/gpt-4.5-preview"
+            ],
+            options: [
+                "auto_models": "true"
+            ]
+        ),
+        ProviderConfig(
+            id: "openrouter",
+            name: "OpenRouter",
+            enabled: false,
+            apiEndpoint: "openrouter.ai",
+            apiKey: "",
+            models: [
+                // Top Mainstream Flagship Models
+                "anthropic/claude-3.7-sonnet",
+                "anthropic/claude-3.5-sonnet",
+                "deepseek/deepseek-chat",
+                "deepseek/deepseek-r1",
+                "openai/gpt-4o",
+                "openai/gpt-4.5-preview",
+                "meta-llama/llama-3.3-70b-instruct",
+                "google/gemini-2.5-pro",
+                "google/gemini-2.5-flash",
+                // Top Curated Free Models
+                "liquid/lfm-2.5-2.6b:free",
+                "nvidia/nemotron-3.5-lightning:free",
+                "z-ai/glm-5.2:free",
+                "cohere/north-mini-code:free",
+                "minimax/minimax-m3:free",
+                "thinkingmachines/inkling:free"
+            ],
+            options: [
+                "api_path": "/api/v1/chat/completions",
+                "auto_models": "true"
             ]
         ),
     ]
