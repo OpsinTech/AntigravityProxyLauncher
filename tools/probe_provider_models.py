@@ -42,7 +42,11 @@ MODEL_CANDIDATE_GRIDS = {
 
     "hunyuan": [
         "hy3", "hy-3", "hunyuan3", "hunyuan-3", "hy3-chat", "hy3-code", "hy3-pro", "hy3-lite",
-        "hunyuan-chat", "hunyuan-code", "hunyuan-pro", "hunyuan-lite", "hunyuan-standard", "hunyuan-coder"
+        "hunyuan-chat", "hunyuan-code", "hunyuan-pro", "hunyuan-lite", "hunyuan-standard", "hunyuan-coder",
+        "hy4", "hy-4", "hunyuan4", "hunyuan-4", "hy4-chat", "hy4-pro", "hy4-lite", "hy4-turbo",
+        "hy4-preview", "hy4-preview-free", "hy4-preview-lite", "hy4-preview-pro", "hy4-preview-turbo",
+        "hunyuan-4-preview", "hunyuan-4.0", "hunyuan-4.0-pro", "hunyuan-4.0-lite", "hunyuan-4.0-turbo",
+        "hunyuan-t1", "hunyuan-turbo", "hunyuan-turboS", "hunyuan-2.0-instruct"
     ],
 
     "qwen": [

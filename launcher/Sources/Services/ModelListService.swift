@@ -55,12 +55,115 @@ struct ModelListService {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ModelListError.networkError
         }
-        guard httpResponse.statusCode == 200 else {
-            throw ModelListError.httpError(httpResponse.statusCode)
+        // Special handling for OpenRouter: parse metadata and filter out deprecated/low-quality items
+        if host.contains("openrouter.ai") {
+            let openRouterModels = parseOpenRouterModels(data: data)
+            if !openRouterModels.isEmpty {
+                return openRouterModels
+            }
         }
 
         let modelList = try JSONDecoder().decode(ModelListResponse.self, from: data)
         return modelList.data.map(\.id).sorted()
+    }
+
+    // MARK: - OpenRouter Intelligent Filtering
+
+    private struct OpenRouterModel: Codable {
+        let id: String
+        let name: String?
+        let description: String?
+        let contextLength: Int?
+        let architecture: Architecture?
+        let pricing: Pricing?
+
+        struct Architecture: Codable {
+            let modality: String?
+            let outputModalities: [String]?
+
+            enum CodingKeys: String, CodingKey {
+                case modality
+                case outputModalities = "output_modalities"
+            }
+        }
+
+        struct Pricing: Codable {
+            let prompt: String?
+            let completion: String?
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case name
+            case description
+            case contextLength = "context_length"
+            case architecture
+            case pricing
+        }
+    }
+
+    private struct OpenRouterModelResponse: Codable {
+        let data: [OpenRouterModel]
+    }
+
+    private func parseOpenRouterModels(data: Data) -> [String] {
+        guard let response = try? JSONDecoder().decode(OpenRouterModelResponse.self, from: data) else {
+            return []
+        }
+
+        // Filter out non-text models, embeddings, moderation/safety guard models
+        let validModels = response.data.filter { model in
+            let mid = model.id.lowercased()
+
+            // Filter out non-text output models
+            if let outputMods = model.architecture?.outputModalities, !outputMods.isEmpty {
+                if !outputMods.contains("text") {
+                    return false
+                }
+            }
+
+            // Filter out non-chat / internal utility models
+            let blacklistedSubstrings = ["guard", "safety", "moderation", "embed", "whisper", "tts", "dall-e", "midjourney"]
+            if blacklistedSubstrings.contains(where: { mid.contains($0) }) {
+                return false
+            }
+
+            return true
+        }
+
+        var freeModels: [String] = []
+        var priorityPaidModels: [String] = []
+        var otherPaidModels: [String] = []
+
+        let priorityPrefixes = [
+            "anthropic/claude-3.7", "anthropic/claude-3.5", "anthropic/claude-sonnet", "anthropic/claude-opus",
+            "deepseek/deepseek-chat", "deepseek/deepseek-r1", "deepseek/deepseek-v3",
+            "openai/gpt-4o", "openai/gpt-4.5", "openai/o1", "openai/o3",
+            "google/gemini-2.5", "google/gemini-2.0", "google/gemini-flash",
+            "meta-llama/llama-3.3", "meta-llama/llama-3.1",
+            "qwen/qwen-2.5", "z-ai/glm-5", "minimax/minimax", "mistralai/mistral-large"
+        ]
+
+        for model in validModels {
+            let mid = model.id
+            let isFree = mid.hasSuffix(":free") ||
+                (model.pricing?.prompt == "0" && model.pricing?.completion == "0")
+
+            if isFree {
+                freeModels.append(mid)
+            } else if priorityPrefixes.contains(where: { mid.lowercased().hasPrefix($0) }) {
+                priorityPaidModels.append(mid)
+            } else {
+                otherPaidModels.append(mid)
+            }
+        }
+
+        freeModels.sort()
+        priorityPaidModels.sort()
+        otherPaidModels.sort()
+
+        // Combine: Priority Flagship -> Curated Free -> Other Models
+        return priorityPaidModels + freeModels + otherPaidModels
     }
 
     /// Probe connectivity by sending a minimal chat completion request.
