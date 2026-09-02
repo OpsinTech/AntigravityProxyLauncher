@@ -44,3 +44,6 @@ dist/
 
 # AntigravityTun
 AntigravityTun/
+
+# Derived data cache
+.derived_data/
