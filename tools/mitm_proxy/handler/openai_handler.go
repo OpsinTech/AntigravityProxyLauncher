@@ -160,10 +160,10 @@ func (h *OpenAIHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	log.Printf("[OpenAI] Translating %s -> %s (provider: %s)", modelDetect.Model, targetModel, targetProviderID)
 
 	if providerReq.Stream {
-		streamCtx, streamCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		streamCtx, streamCancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		return h.handleStreamRequest(r, streamCtx, streamCancel, p, providerReq, trans, modelDetect.Model)
 	}
-	reqCtx, reqCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer reqCancel()
 	return h.handleNonStreamRequest(r, reqCtx, p, providerReq, trans, modelDetect.Model)
 }

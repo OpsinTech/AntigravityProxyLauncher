@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -61,9 +62,22 @@ func shouldMitm(host string) bool {
 // conditionalMitm returns a goproxy FuncHttpsHandler that only MITMs
 // hosts in the mitmHosts list, tunneling everything else transparently.
 func conditionalMitm() goproxy.FuncHttpsHandler {
+	var (
+		mu         sync.Mutex
+		connectMap = make(map[string]uint64)
+	)
 	return func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
 		if shouldMitm(host) {
-			log.Printf("[CONNECT] MITM intercept: %s", host)
+			mu.Lock()
+			connectMap[host]++
+			count := connectMap[host]
+			mu.Unlock()
+
+			if count == 1 || count%50 == 0 {
+				log.Printf("[CONNECT] MITM intercept: %s (total: %d)", host, count)
+			} else if os.Getenv("MITM_DEBUG") == "true" {
+				log.Printf("[CONNECT] MITM intercept: %s (total: %d)", host, count)
+			}
 			return goproxy.MitmConnect, host
 		}
 		log.Printf("[CONNECT] Tunnel passthrough: %s", host)
@@ -230,7 +244,7 @@ func main() {
 	server := &http.Server{
 		Addr:         "0.0.0.0:" + port,
 		Handler:      proxyWrapper,
-		ReadTimeout:  30 * time.Second,
+		ReadTimeout:  60 * time.Second,
 		WriteTimeout: 0, // SSE streams have no fixed duration
 		IdleTimeout:  120 * time.Second,
 	}

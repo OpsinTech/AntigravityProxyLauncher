@@ -54,6 +54,16 @@ func (h *GeminiHandler) Match(req *http.Request) bool {
 }
 
 func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+	// Fast bypass for non-POST requests (GET / HEAD / OPTIONS) — AI generation is always POST
+	if r.Method != http.MethodPost && !strings.Contains(r.URL.Path, "fetchAvailableModels") {
+		return r, nil
+	}
+
+	// Fast bypass for known internal auxiliary/telemetry RPCs that never carry model payloads
+	if isNonModelRpc(r.URL.Path) {
+		return r, nil
+	}
+
 	log.Printf("[Gemini] Intercepted: %s %s", r.URL.Host, r.URL.Path)
 
 	// Always attempt to read body and extract model — don't restrict by path.
@@ -61,14 +71,16 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 	if err != nil {
 		log.Printf("[Gemini] Failed to read body, passing through: %v", err)
-		return h.handlePassthrough(r, ctx)
+		return r, nil
 	}
 
 	modelName := h.extractModelFromBody(bodyBytes)
 	if modelName == "" {
-		log.Printf("[Gemini] No model in body, passing through: %s", r.URL.Path)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return h.handlePassthrough(r, ctx)
+		if strings.Contains(r.URL.Path, "fetchAvailableModels") {
+			return h.handlePassthrough(r, ctx)
+		}
+		return r, nil
 	}
 
 	log.Printf("[Gemini] Detected model: %s, searching routing rules...", modelName)
@@ -126,7 +138,9 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 			log.Printf("[Gemini] gemini_builtin: no target model, passing through unchanged")
 		}
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return h.handlePassthrough(r, ctx)
+		r.ContentLength = int64(len(bodyBytes))
+		r.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
+		return r, nil
 	}
 
 	// Local model servers (ollama / vllm / llama.cpp) often need no API key,
@@ -162,12 +176,31 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	log.Printf("[Gemini] Translating %s -> %s (provider: %s)", modelName, targetModel, targetProviderID)
 
 	if providerReq.Stream {
-		streamCtx, streamCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		streamCtx, streamCancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		return h.handleStreamRequest(r, streamCtx, streamCancel, p, providerReq, trans, modelName)
 	}
-	reqCtx, reqCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer reqCancel()
 	return h.handleNonStreamRequest(r, reqCtx, p, providerReq, trans, modelName)
+}
+
+func isNonModelRpc(path string) bool {
+	nonModelPaths := []string{
+		"listExperiments",
+		"fetchUserInfo",
+		"loadCodeAssist",
+		"recordTelemetry",
+		"recordEvent",
+		"checkEligibility",
+		"heartbeat",
+		"notifications",
+	}
+	for _, p := range nonModelPaths {
+		if strings.Contains(path, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *GeminiHandler) handlePassthrough(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
@@ -179,6 +212,11 @@ func (h *GeminiHandler) handlePassthrough(r *http.Request, ctx *goproxy.ProxyCtx
 	if resp == nil || resp.Body == nil {
 		log.Printf("[Gemini] Passthrough returned nil response or body")
 		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream returned empty response")
+	}
+
+	// Never buffer streaming SSE or chunked responses
+	if resp.Header.Get("Content-Type") == "text/event-stream" || strings.Contains(r.URL.Path, "streamGenerateContent") {
+		return r, resp
 	}
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
@@ -382,16 +420,23 @@ func substituteGeminiModel(body []byte, targetModel string) []byte {
 		return nil
 	}
 
+	modified := false
+
 	// Top-level model field (Cloud Code wrapped format: {"model": "...", "request": {...}})
 	if _, ok := raw["model"].(string); ok {
 		raw["model"] = targetModel
-	} else if req, ok := raw["request"].(map[string]interface{}); ok {
+		modified = true
+	}
+
+	// Nested request.model field
+	if req, ok := raw["request"].(map[string]interface{}); ok {
 		if _, ok := req["model"].(string); ok {
 			req["model"] = targetModel
-		} else {
-			return nil
+			modified = true
 		}
-	} else {
+	}
+
+	if !modified {
 		return nil
 	}
 
