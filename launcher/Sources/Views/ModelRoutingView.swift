@@ -831,8 +831,8 @@ struct LLMRouterRuleRow: View {
                 .frame(width: 200)
                 .onChange(of: keywordsText) { newValue in
                     rule.keywords = newValue
-                        .split(separator: ",")
-                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .components(separatedBy: CharacterSet(charactersIn: ",，、;| \t\n"))
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                         .filter { !$0.isEmpty }
                 }
 

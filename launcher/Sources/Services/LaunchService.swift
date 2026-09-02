@@ -48,7 +48,7 @@ final class LaunchService {
         // P1: proactively ensure a valid combined CA bundle at Launcher startup (silent), so the
         // target app gets a correct bundle on first launch instead of hitting a stale/partial one.
         Task.detached(priority: .utility) { [weak self] in
-            self?.ensureCombinedCABundle(env: nil)
+            self?.ensureCombinedCABundleOnDisk()
         }
     }
 
@@ -163,7 +163,7 @@ final class LaunchService {
     ///
     /// Every resolution step is logged so field issues can be diagnosed from the Launcher log
     /// (which source supplied the roots, how many certs, and whether the bundle is valid).
-    private func ensureCombinedCABundle(env: inout [String: String]?) {
+    private func ensureCombinedCABundleOnDisk() {
         let caCertPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/antigravity/goproxy_ca.pem").path
         let combinedCAPath = FileManager.default.homeDirectoryForCurrentUser
@@ -230,11 +230,16 @@ final class LaunchService {
                 log.error("[Launch] Could not obtain system root CAs from any source; SSL_CERT_FILE left unset so Go uses the OS trust store")
             }
         }
+    }
 
+    private func ensureCombinedCABundle(env: inout [String: String]) {
+        ensureCombinedCABundleOnDisk()
+        let combinedCAPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/antigravity/combined_ca.pem").path
         // Inject SSL_CERT_FILE only when we have a VALID combined bundle. Otherwise leave it unset
         // so Go verifies against the system store.
         if combinedBundleIsValid(combinedCAPath) {
-            env?["SSL_CERT_FILE"] = combinedCAPath
+            env["SSL_CERT_FILE"] = combinedCAPath
             log.info("[Launch] SSL_CERT_FILE set -> \(combinedCAPath)")
         } else {
             log.warning("[Launch] No valid combined CA bundle; SSL_CERT_FILE left unset (Go uses OS trust store)")
