@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -272,9 +273,6 @@ func (p *OpenAIProvider) IsModelSupported(model string) bool {
 }
 
 func (p *OpenAIProvider) SendRequest(ctx context.Context, req *ProviderRequest) (*ProviderResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
 	var reqBytes []byte
 	var err error
 
@@ -371,15 +369,16 @@ func (p *OpenAIProvider) SendStreamRequest(ctx context.Context, req *ProviderReq
 		}
 	}
 
-	log.Printf("[OpenAI:%s] Request body keys: model=%s, stream=%v, tools=%d, messages=%d",
+	log.Printf("[OpenAI:%s] Request: model=%s, stream=%v, tools=%d, messages=%d",
 		p.config.ID, req.Model, req.Stream, len(req.Tools), len(req.Messages))
 
-	// Debug: log request body (first 2000 chars)
-	reqBodyStr := string(reqBytes)
-	if len(reqBodyStr) > 2000 {
-		reqBodyStr = reqBodyStr[:2000] + "...(truncated)"
+	if os.Getenv("MITM_DEBUG") == "true" {
+		reqBodyStr := string(reqBytes)
+		if len(reqBodyStr) > 2000 {
+			reqBodyStr = reqBodyStr[:2000] + "...(truncated)"
+		}
+		log.Printf("[OpenAI:%s] [DEBUG] Request body: %s", p.config.ID, reqBodyStr)
 	}
-	log.Printf("[OpenAI:%s] Request body: %s", p.config.ID, reqBodyStr)
 
 	url := fmt.Sprintf("%s://%s%s", p.scheme, p.config.ApiEndpoint, p.apiPath)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBytes))
@@ -485,8 +484,8 @@ func (p *OpenAIProvider) processStream(ctx context.Context, body io.ReadCloser, 
 		}
 
 		// Debug: log first chunk content
-		if chunkCount == 0 {
-			log.Printf("[OpenAI:%s] First chunk raw: %s", p.config.ID, dataStr)
+		if chunkCount == 0 && os.Getenv("MITM_DEBUG") == "true" {
+			log.Printf("[OpenAI:%s] [DEBUG] First chunk raw: %s", p.config.ID, dataStr)
 		}
 
 		var streamResp OpenAIStreamResponse

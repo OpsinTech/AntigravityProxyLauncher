@@ -93,3 +93,42 @@ func TestResolveLLMRouterTargetConcreteRuleUnchanged(t *testing.T) {
 		t.Fatalf("concrete rule: got (%s, %s), want (codebuddy, deepseek-v4-flash)", providerID, model)
 	}
 }
+
+func TestMatchKeywords_CJKDelimiters(t *testing.T) {
+	keywords := []string{"图片，images，image，截图，链接，方案，调研，评审，定位，检查"}
+	if !matchKeywords(keywords, "请帮我评审一下这段代码", "any") {
+		t.Errorf("Expected '评审' to match against full-width comma separated keywords")
+	}
+	if !matchKeywords(keywords, "这里有一个链接", "any") {
+		t.Errorf("Expected '链接' to match")
+	}
+	if matchKeywords(keywords, "无关内容", "any") {
+		t.Errorf("Did not expect '无关内容' to match")
+	}
+}
+
+func TestExtractLatestGeminiUserContent_AgentMultiTurn(t *testing.T) {
+	// Simulated multi-turn agent payload where contents[0] is user prompt with <USER_REQUEST>
+	// and contents[2] is a tool execution result.
+	body := []byte(`{
+		"contents": [
+			{
+				"role": "user",
+				"parts": [{"text": "<identity>system...</identity>\n<USER_REQUEST>\n请帮我评审代码\n</USER_REQUEST>"}]
+			},
+			{
+				"role": "model",
+				"parts": [{"functionCall": {"name": "view_file"}}]
+			},
+			{
+				"role": "user",
+				"parts": [{"text": "function test() { console.log(1); }"}]
+			}
+		]
+	}`)
+
+	extracted := ExtractLatestUserContent(body, "gemini")
+	if extracted != "请帮我评审代码" {
+		t.Fatalf("Expected extracted prompt '请帮我评审代码', got: %q", extracted)
+	}
+}
