@@ -6,18 +6,22 @@ struct ModelRoutingView: View {
     @State private var errorMessage: String?
     @State private var isRestarting = false
 
+    @State private var isModelRoutingExpanded = true
+    @State private var isProvidersExpanded = true
+    @State private var isRoutingRulesExpanded = true
+    @State private var isLLMRouterExpanded = true
+
     private var isModelRoutingEnabled: Bool {
         appState.proxyConfigDraft.mitm?.modelRoutingEnabled ?? false
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 20) {
                 headerSection
 
                 if isModelRoutingEnabled {
-                    providerSection
-                    routingRulesSection
+                    modelRoutingBusinessSection
                     llmRouterSection
                     controlSection
                 } else {
@@ -59,7 +63,7 @@ struct ModelRoutingView: View {
     // MARK: - Header
 
     private var headerSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.triangle.branch")
                     .font(.title2)
@@ -75,133 +79,148 @@ struct ModelRoutingView: View {
         }
     }
 
-    // MARK: - Provider Section
+    // MARK: - 模型路由业务配置（接口厂家 + 映射规则 合并为一个大卡片）
 
-    private var providerSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 8) {
-                Image(systemName: "rectangle.stack.badge.person.crop")
-                    .foregroundStyle(.green)
-                Text("接口厂家配置")
-                    .font(.headline)
-            }
-
-            Text("勾选启用的目标厂家，并分别设定对应的 API 接入点（Endpoint）和密钥（API Key）。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 16)], spacing: 16) {
-                ForEach($appState.modelRoutingConfig.providers) { $provider in
-                    ProviderCard(provider: $provider)
-                }
-            }
-        }
-        .cardStyle(accent: .green)
-    }
-
-    // MARK: - Routing Rules Section
-
-    private var routingRulesSection: some View {
+    private var modelRoutingBusinessSection: some View {
+        let enabledProvidersCount = appState.modelRoutingConfig.providers.filter(\.enabled).count
+        let totalProvidersCount = appState.modelRoutingConfig.providers.count
+        let rulesCount = appState.modelRoutingConfig.routingRules.count
         let currentRules = appState.modelRoutingConfig.routingRules
 
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.left.arrow.right")
-                    .foregroundStyle(.orange)
-                Text("模型路由映射规则")
-                    .font(.headline)
-            }
-            Divider()
-
-            Text("配置需要转译的源模型，选择目标服务商和模型。规则存在即生效，删除即停止映射。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            // Header labels
-            HStack(spacing: 8) {
-                Text("源模型匹配名称")
-                    .font(.caption)
-                    .bold()
-                    .foregroundStyle(.secondary)
-                    .frame(width: 140, alignment: .leading)
-                Spacer().frame(width: 20)
-                Text("目标服务商")
-                    .font(.caption)
-                    .bold()
-                    .foregroundStyle(.secondary)
-                    .frame(width: 130, alignment: .leading)
-                Text("映射目标模型")
-                    .font(.caption)
-                    .bold()
-                    .foregroundStyle(.secondary)
-                    .frame(width: 170, alignment: .leading)
-                Spacer().frame(width: 24)
-            }
-            .padding(.horizontal, 8)
-
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach($appState.modelRoutingConfig.routingRules) { $rule in
-                    let ruleID = $rule.wrappedValue.id
-                    RoutingRuleRow(
-                        rule: $rule,
-                        allProviders: appState.modelRoutingConfig.providers,
-                        onDelete: {
-                            appState.modelRoutingConfig.routingRules.removeAll { $0.id == ruleID }
+        return CollapsibleCard(
+            icon: "arrow.triangle.2.circlepath",
+            accentColor: .green,
+            title: "模型路由配置",
+            subtitle: "配置第三方 API 接口厂家及源模型至目标模型的映射规则",
+            badgeText: "\(enabledProvidersCount)/\(totalProvidersCount) 厂家 · \(rulesCount) 规则",
+            isExpanded: $isModelRoutingExpanded
+        ) {
+            VStack(alignment: .leading, spacing: 18) {
+                // 子区 1：接口厂家配置
+                SubCollapsibleSection(
+                    icon: "rectangle.stack.badge.person.crop",
+                    accentColor: .green,
+                    title: "接口厂家配置",
+                    description: "勾选启用的目标厂家，并分别设定对应的 API 接入点（Endpoint）和密钥（API Key）。超过两行可向下滚动查看更多。",
+                    badgeText: "\(enabledProvidersCount) 启用",
+                    isExpanded: $isProvidersExpanded
+                ) {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 14)], spacing: 14) {
+                            ForEach($appState.modelRoutingConfig.providers) { $provider in
+                                ProviderCard(provider: $provider)
+                            }
                         }
-                    )
-                    if ruleID != currentRules.last?.id {
-                        Divider().opacity(0.5)
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 2)
                     }
+                    .frame(maxHeight: 520)
+                    .padding(.top, 4)
                 }
 
-                Button(action: {
-                    let newRule = ModelRoutingConfig.RoutingRule(
-                        sourceModelPattern: "",
-                        sourceDisplayName: "新规则",
-                        sourceType: "google",
-                        targetProviderID: nil,
-                        targetModel: nil,
-                        enabled: true
-                    )
-                    appState.modelRoutingConfig.routingRules.append(newRule)
-                }) {
-                    HStack(spacing: 6) {
-                        Spacer()
-                        Image(systemName: "plus.circle")
-                        Text("添加规则")
-                        Spacer()
+                Divider()
+                    .opacity(0.5)
+
+                // 子区 2：模型路由映射规则
+                SubCollapsibleSection(
+                    icon: "arrow.left.arrow.right",
+                    accentColor: .orange,
+                    title: "模型路由映射规则",
+                    description: "配置需要转译的源模型，选择目标服务商和模型。规则存在即生效，删除即停止映射。",
+                    badgeText: "\(rulesCount) 条规则",
+                    isExpanded: $isRoutingRulesExpanded
+                ) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        // Header labels
+                        HStack(spacing: 8) {
+                            Text("源模型匹配名称")
+                                .font(.caption)
+                                .bold()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 140, alignment: .leading)
+                            Spacer().frame(width: 20)
+                            Text("目标服务商")
+                                .font(.caption)
+                                .bold()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 130, alignment: .leading)
+                            Text("映射目标模型")
+                                .font(.caption)
+                                .bold()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 170, alignment: .leading)
+                            Spacer().frame(width: 24)
+                        }
+                        .padding(.horizontal, 8)
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach($appState.modelRoutingConfig.routingRules) { $rule in
+                                let ruleID = $rule.wrappedValue.id
+                                RoutingRuleRow(
+                                    rule: $rule,
+                                    allProviders: appState.modelRoutingConfig.providers,
+                                    onDelete: {
+                                        appState.modelRoutingConfig.routingRules.removeAll { $0.id == ruleID }
+                                    }
+                                )
+                                if ruleID != currentRules.last?.id {
+                                    Divider().opacity(0.4)
+                                }
+                            }
+
+                            Button(action: {
+                                let newRule = ModelRoutingConfig.RoutingRule(
+                                    sourceModelPattern: "",
+                                    sourceDisplayName: "新规则",
+                                    sourceType: "google",
+                                    targetProviderID: nil,
+                                    targetModel: nil,
+                                    enabled: true
+                                )
+                                appState.modelRoutingConfig.routingRules.append(newRule)
+                            }) {
+                                HStack(spacing: 6) {
+                                    Spacer()
+                                    Image(systemName: "plus.circle")
+                                    Text("添加规则")
+                                    Spacer()
+                                }
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                                        .foregroundStyle(.secondary.opacity(0.5))
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.top, 4)
+                        }
+                        .innerPanelStyle()
                     }
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
-                            .foregroundStyle(.secondary.opacity(0.5))
-                    )
+                    .padding(.top, 4)
                 }
-                .buttonStyle(.plain)
-                .padding(.top, 4)
             }
-            .innerPanelStyle()
         }
-        .padding(20)
-        .cardStyle(accent: .orange)
     }
 
     // MARK: - LLMRouter Section
 
     private var llmRouterSection: some View {
         let hasLLMRouterRules = appState.modelRoutingConfig.routingRules.contains { $0.targetProviderID == LLMRouterProviderID }
+        let isRouterEnabled = appState.modelRoutingConfig.llmRouter?.enabled ?? false
+        let ruleCount = appState.modelRoutingConfig.llmRouter?.rules.count ?? 0
 
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 8) {
-                Image(systemName: "shuffle")
-                    .foregroundStyle(.purple)
-                Text("LLM Router（关键词路由）")
-                    .font(.headline)
-                Spacer()
+        return CollapsibleCard(
+            icon: "shuffle",
+            accentColor: .purple,
+            title: "LLM Router（关键词路由）",
+            subtitle: "根据请求 Prompt 关键词，智能分流路由至不同目标模型",
+            badgeText: isRouterEnabled ? "已启用 · \(ruleCount) 规则" : "未开启",
+            isExpanded: $isLLMRouterExpanded,
+            headerTrailing: {
                 Toggle("", isOn: Binding(
                     get: { appState.modelRoutingConfig.llmRouter?.enabled ?? false },
                     set: { isOn in
@@ -218,157 +237,186 @@ struct ModelRoutingView: View {
                 .toggleStyle(.switch)
                 .labelsHidden()
             }
-            Divider()
-
-            if !hasLLMRouterRules {
-                Text("在上方「模型路由映射规则」中将目标服务商选择为「LLM Router」后，请求将进入关键词路由子系统。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if appState.modelRoutingConfig.llmRouter == nil || !appState.modelRoutingConfig.llmRouter!.enabled {
-                Text("已有规则映射到 LLM Router，但未开启此功能。开启后将根据关键词匹配路由到不同模型。")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            } else {
-                Text("根据请求内容中的关键词，自动路由到不同的目标模型。未命中关键词时使用默认模型。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if appState.modelRoutingConfig.llmRouter?.enabled == true {
-                // Default model
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("默认模型（未命中关键词时使用）")
-                        .font(.caption)
-                        .bold()
-                        .foregroundStyle(.secondary)
-
+        ) {
+            VStack(alignment: .leading, spacing: 16) {
+                if !hasLLMRouterRules {
                     HStack(spacing: 8) {
-                        Picker("默认厂家", selection: Binding(
-                            get: { appState.modelRoutingConfig.llmRouter?.defaultProviderID ?? "" },
-                            set: { newID in
-                                appState.modelRoutingConfig.llmRouter?.defaultProviderID = newID
-                                if let p = appState.modelRoutingConfig.providers.first(where: { $0.id == newID && $0.enabled }),
-                                   !p.models.isEmpty {
-                                    appState.modelRoutingConfig.llmRouter?.defaultModel = p.models[0]
-                                } else {
-                                    appState.modelRoutingConfig.llmRouter?.defaultModel = ""
-                                }
-                            }
-                        )) {
-                            Text("选择厂家").tag("")
-                            ForEach(appState.modelRoutingConfig.providers.filter(\.enabled)) { p in
-                                Text(p.name).tag(p.id)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 150)
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                        Text("在上方「模型路由映射规则」中将目标服务商选择为「LLM Router」后，请求将进入关键词路由子系统。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(10)
+                    .background(Color.secondary.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else if !isRouterEnabled {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text("已有规则映射到 LLM Router，但尚未开启此功能开关。开启后将按关键词分流。")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    .padding(10)
+                    .background(Color.orange.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.purple)
+                        Text("根据请求 Prompt 中的关键词自动匹配并路由至目标模型；未命中时使用下方默认模型。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
-                        let defaultPID = appState.modelRoutingConfig.llmRouter?.defaultProviderID ?? ""
-                        if let provider = appState.modelRoutingConfig.providers.first(where: { $0.id == defaultPID && $0.enabled }) {
-                            Picker("默认模型", selection: Binding(
-                                get: { appState.modelRoutingConfig.llmRouter?.defaultModel ?? "" },
-                                set: { appState.modelRoutingConfig.llmRouter?.defaultModel = $0 }
+                if isRouterEnabled {
+                    // Default model section
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("默认模型（未命中关键词时使用）")
+                            .font(.caption)
+                            .bold()
+                            .foregroundStyle(.secondary)
+
+                        HStack(spacing: 12) {
+                            Picker("默认厂家", selection: Binding(
+                                get: { appState.modelRoutingConfig.llmRouter?.defaultProviderID ?? "" },
+                                set: { newID in
+                                    appState.modelRoutingConfig.llmRouter?.defaultProviderID = newID
+                                    if let p = appState.modelRoutingConfig.providers.first(where: { $0.id == newID && $0.enabled }),
+                                       !p.models.isEmpty {
+                                        appState.modelRoutingConfig.llmRouter?.defaultModel = p.models[0]
+                                    } else {
+                                        appState.modelRoutingConfig.llmRouter?.defaultModel = ""
+                                    }
+                                }
                             )) {
-                                Text("选择模型").tag("")
-                                ForEach(provider.models, id: \.self) { m in
-                                    Text(m).tag(m)
+                                Text("选择厂家").tag("")
+                                ForEach(appState.modelRoutingConfig.providers.filter(\.enabled)) { p in
+                                    Text(p.name).tag(p.id)
                                 }
                             }
                             .labelsHidden()
-                            .frame(width: 200)
-                        } else {
-                            Spacer().frame(width: 200)
-                        }
-                    }
-                }
+                            .frame(width: 160)
 
-                Divider()
-
-                // Keyword rules
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("关键词路由规则")
-                        .font(.caption)
-                        .bold()
-                        .foregroundStyle(.secondary)
-
-                    // Header
-                    HStack(spacing: 8) {
-                        Text("关键词（逗号分隔）")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 200, alignment: .leading)
-                        Text("匹配模式")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 90, alignment: .leading)
-                        Text("目标厂家")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 120, alignment: .leading)
-                        Text("目标模型")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 160, alignment: .leading)
-                        Spacer().frame(width: 24)
-                    }
-                    .padding(.horizontal, 4)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        let rulesBinding = Binding<[ModelRoutingConfig.LLMRouterRule]>(
-                            get: { appState.modelRoutingConfig.llmRouter?.rules ?? [] },
-                            set: { appState.modelRoutingConfig.llmRouter?.rules = $0 }
-                        )
-                        let currentRules = appState.modelRoutingConfig.llmRouter?.rules ?? []
-                        ForEach(rulesBinding) { $rule in
-                            let ruleID = $rule.wrappedValue.id
-                            LLMRouterRuleRow(
-                                rule: $rule,
-                                allProviders: appState.modelRoutingConfig.providers,
-                                onDelete: {
-                                    appState.modelRoutingConfig.llmRouter?.rules.removeAll { $0.id == ruleID }
+                            let defaultPID = appState.modelRoutingConfig.llmRouter?.defaultProviderID ?? ""
+                            if let provider = appState.modelRoutingConfig.providers.first(where: { $0.id == defaultPID && $0.enabled }) {
+                                Picker("默认模型", selection: Binding(
+                                    get: { appState.modelRoutingConfig.llmRouter?.defaultModel ?? "" },
+                                    set: { appState.modelRoutingConfig.llmRouter?.defaultModel = $0 }
+                                )) {
+                                    Text("选择模型").tag("")
+                                    ForEach(provider.models, id: \.self) { m in
+                                        Text(m).tag(m)
+                                    }
                                 }
-                            )
-                            if ruleID != currentRules.last?.id {
-                                Divider().opacity(0.3)
+                                .labelsHidden()
+                                .frame(width: 200)
+                            } else {
+                                Spacer().frame(width: 200)
                             }
                         }
-
-                        Button(action: {
-                            appState.modelRoutingConfig.llmRouter?.rules.append(
-                                ModelRoutingConfig.LLMRouterRule()
-                            )
-                        }) {
-                            HStack(spacing: 6) {
-                                Spacer()
-                                Image(systemName: "plus.circle")
-                                Text("添加关键词规则")
-                                Spacer()
-                            }
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
-                                    .foregroundStyle(.secondary.opacity(0.5))
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.top, 4)
+                        .padding(10)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color(nsColor: .separatorColor).opacity(0.4), lineWidth: 1)
+                        )
                     }
-                    .innerPanelStyle()
+
+                    Divider()
+                        .opacity(0.5)
+
+                    // Keyword rules
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("关键词路由规则")
+                            .font(.caption)
+                            .bold()
+                            .foregroundStyle(.secondary)
+
+                        // Header
+                        HStack(spacing: 8) {
+                            Text("关键词（逗号分隔）")
+                                .font(.caption)
+                                .bold()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 200, alignment: .leading)
+                            Text("匹配模式")
+                                .font(.caption)
+                                .bold()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 90, alignment: .leading)
+                            Text("目标厂家")
+                                .font(.caption)
+                                .bold()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 120, alignment: .leading)
+                            Text("目标模型")
+                                .font(.caption)
+                                .bold()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 160, alignment: .leading)
+                            Spacer().frame(width: 24)
+                        }
+                        .padding(.horizontal, 8)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            let rulesBinding = Binding<[ModelRoutingConfig.LLMRouterRule]>(
+                                get: { appState.modelRoutingConfig.llmRouter?.rules ?? [] },
+                                set: { appState.modelRoutingConfig.llmRouter?.rules = $0 }
+                            )
+                            let currentRules = appState.modelRoutingConfig.llmRouter?.rules ?? []
+                            ForEach(rulesBinding) { $rule in
+                                let ruleID = $rule.wrappedValue.id
+                                LLMRouterRuleRow(
+                                    rule: $rule,
+                                    allProviders: appState.modelRoutingConfig.providers,
+                                    onDelete: {
+                                        appState.modelRoutingConfig.llmRouter?.rules.removeAll { $0.id == ruleID }
+                                    }
+                                )
+                                if ruleID != currentRules.last?.id {
+                                    Divider().opacity(0.3)
+                                }
+                            }
+
+                            Button(action: {
+                                appState.modelRoutingConfig.llmRouter?.rules.append(
+                                    ModelRoutingConfig.LLMRouterRule()
+                                )
+                            }) {
+                                HStack(spacing: 6) {
+                                    Spacer()
+                                    Image(systemName: "plus.circle")
+                                    Text("添加关键词规则")
+                                    Spacer()
+                                }
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+                                        .foregroundStyle(.secondary.opacity(0.5))
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.top, 4)
+                        }
+                        .innerPanelStyle()
+                    }
                 }
             }
         }
-        .padding(20)
-        .cardStyle(accent: .purple)
     }
 
     // MARK: - Control Section
 
     private var controlSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 Button(action: {
                     appState.modelRoutingConfig = .default
@@ -394,18 +442,26 @@ struct ModelRoutingView: View {
                 Spacer()
 
                 if let message = statusMessage {
-                    Text(message)
-                        .font(.subheadline)
-                        .foregroundStyle(.green)
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                        Text(message)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.green)
                 }
                 if let error = errorMessage {
-                    Text(error)
-                        .font(.subheadline)
-                        .foregroundStyle(.red)
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                        Text(error)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.red)
                 }
             }
 
             Divider()
+                .opacity(0.5)
+
             HStack(spacing: 8) {
                 Image(systemName: "doc.text.fill")
                     .foregroundStyle(.secondary)
@@ -415,8 +471,17 @@ struct ModelRoutingView: View {
                     .textSelection(.enabled)
             }
         }
-        .padding(20)
-        .cardStyle(accent: nil)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(nsColor: .controlBackgroundColor))
+                .shadow(color: Color.black.opacity(0.04), radius: 3, x: 0, y: 1)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 1)
+        )
     }
 
     // MARK: - Helpers
@@ -454,6 +519,206 @@ struct ModelRoutingView: View {
     }
 }
 
+// MARK: - Collapsible Card
+
+struct CollapsibleCard<HeaderTrailing: View, Content: View>: View {
+    let icon: String
+    let accentColor: Color
+    let title: String
+    let subtitle: String?
+    let badgeText: String?
+    @Binding var isExpanded: Bool
+    @ViewBuilder let headerTrailing: () -> HeaderTrailing
+    @ViewBuilder let content: () -> Content
+
+    @State private var isHeaderHovered = false
+
+    init(
+        icon: String,
+        accentColor: Color,
+        title: String,
+        subtitle: String? = nil,
+        badgeText: String? = nil,
+        isExpanded: Binding<Bool>,
+        @ViewBuilder headerTrailing: @escaping () -> HeaderTrailing = { EmptyView() },
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.icon = icon
+        self.accentColor = accentColor
+        self.title = title
+        self.subtitle = subtitle
+        self.badgeText = badgeText
+        self._isExpanded = isExpanded
+        self.headerTrailing = headerTrailing
+        self.content = content
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header Bar
+            HStack(spacing: 12) {
+                // Icon squircle badge
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(accentColor.opacity(0.14))
+                    Image(systemName: icon)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(accentColor)
+                }
+                .frame(width: 32, height: 32)
+
+                // Title + Subtitle
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Text(title)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.primary)
+
+                        if let badge = badgeText, !badge.isEmpty {
+                            Text(badge)
+                                .font(.system(size: 11, weight: .medium))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(accentColor.opacity(0.12))
+                                .foregroundStyle(accentColor)
+                                .clipShape(Capsule())
+                        }
+                    }
+
+                    if let subtitle = subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                // Extra trailing controls (e.g. LLM Router Toggle switch)
+                headerTrailing()
+
+                // Chevron icon
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .padding(.leading, 4)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(isHeaderHovered ? Color(nsColor: .quaternaryLabelColor).opacity(0.12) : Color.clear)
+            )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    isExpanded.toggle()
+                }
+            }
+            .onHover { hovering in
+                isHeaderHovered = hovering
+            }
+
+            // Body content when expanded
+            if isExpanded {
+                Divider()
+                    .opacity(0.5)
+
+                VStack(alignment: .leading, spacing: 16) {
+                    content()
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(nsColor: .controlBackgroundColor))
+                .shadow(color: Color.black.opacity(0.04), radius: 3, x: 0, y: 1)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(accentColor.opacity(0.28), lineWidth: 1)
+        )
+    }
+}
+
+// MARK: - Sub Collapsible Section
+
+struct SubCollapsibleSection<Content: View>: View {
+    let icon: String
+    let accentColor: Color
+    let title: String
+    let description: String?
+    let badgeText: String?
+    @Binding var isExpanded: Bool
+    @ViewBuilder let content: () -> Content
+
+    @State private var isHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Sub-header clickable
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(accentColor)
+                    .frame(width: 18)
+
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                if let badge = badgeText, !badge.isEmpty {
+                    Text(badge)
+                        .font(.system(size: 10, weight: .medium))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(accentColor.opacity(0.1))
+                        .foregroundStyle(accentColor)
+                        .clipShape(Capsule())
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovered ? Color(nsColor: .quaternaryLabelColor).opacity(0.1) : Color.clear)
+            )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            }
+            .onHover { hovering in
+                isHovered = hovering
+            }
+
+            if isExpanded {
+                if let desc = description, !desc.isEmpty {
+                    Text(desc)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                }
+
+                content()
+                    .padding(.horizontal, 2)
+            }
+        }
+    }
+}
+
 // MARK: - Provider Card
 
 struct ProviderCard: View {
@@ -470,10 +735,17 @@ struct ProviderCard: View {
 
     private var providerWebsite: URL? {
         switch provider.id {
-        case "deepseek":  return URL(string: "https://platform.deepseek.com/api_keys")
-        case "ofox":      return URL(string: "https://app.ofox.ai/")
-        case "codebuddy": return URL(string: "https://www.codebuddy.cn/")
-        default:          return nil
+        case "deepseek":    return URL(string: "https://platform.deepseek.com/api_keys")
+        case "ofox":        return URL(string: "https://app.ofox.ai/")
+        case "codebuddy":   return URL(string: "https://www.codebuddy.cn/")
+        case "tokenrouter": return URL(string: "https://www.tokenrouter.com/docs/tokenrouter-feature-guide/")
+        case "openrouter":  return URL(string: "https://openrouter.ai/keys")
+        default:
+            // 本地服务模板 id 形如 "local-ollama-xxxx"，按前缀匹配官网
+            if provider.id.hasPrefix("local-ollama") { return URL(string: "https://ollama.com") }
+            if provider.id.hasPrefix("local-vllm") { return URL(string: "https://docs.vllm.ai") }
+            if provider.id.hasPrefix("local-lmstudio") { return URL(string: "https://lmstudio.ai") }
+            return nil
         }
     }
 
@@ -489,6 +761,7 @@ struct ProviderCard: View {
                     }
                     .iconButtonStyle()
                     .help("打开 \(provider.name) 官网")
+                    .disabled(!provider.enabled)
                 }
                 Spacer()
                 Toggle("", isOn: $provider.enabled)
@@ -496,112 +769,118 @@ struct ProviderCard: View {
                     .labelsHidden()
             }
 
-            if provider.enabled {
-                VStack(spacing: 10) {
-                    HStack(spacing: 8) {
-                        Text("接入点")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 50, alignment: .leading)
-                        TextField("api.provider.com", text: $provider.apiEndpoint)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.caption, design: .monospaced))
-                            .onChange(of: provider.apiEndpoint) { _ in clearTestResult() }
-                    }
-
-                    HStack(spacing: 8) {
-                        Text("API Key")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 50, alignment: .leading)
-                        SecureField("sk-xxxx", text: $provider.apiKey)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.caption, design: .monospaced))
-                            .onChange(of: provider.apiKey) { _ in clearTestResult() }
-                    }
-
-                    HStack(spacing: 8) {
-                        Text("API 路径")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 50, alignment: .leading)
-                        TextField("/v1/chat/completions", text: Binding(
-                            get: { provider.options["api_path"] ?? "" },
-                            set: { newValue in
-                                if newValue.isEmpty {
-                                    provider.options.removeValue(forKey: "api_path")
-                                } else {
-                                    provider.options["api_path"] = newValue
-                                }
-                                clearTestResult()
-                            }
-                        ))
+            // 表单始终渲染，保持卡片大小一致；关闭时整体置灰且不可编辑
+            VStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Text("接入点")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 50, alignment: .leading)
+                    TextField("api.provider.com", text: $provider.apiEndpoint)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.caption, design: .monospaced))
-                    }
-
-                    HStack(spacing: 8) {
-                        Text(" ")
-                            .frame(width: 50, alignment: .leading)
-                        Toggle("自动同步模型列表（启动时自动从接口获取）", isOn: Binding(
-                            get: { provider.options["auto_models"] == "true" },
-                            set: { newValue in
-                                if newValue {
-                                    provider.options["auto_models"] = "true"
-                                } else {
-                                    provider.options.removeValue(forKey: "auto_models")
-                                }
-                                clearTestResult()
-                            }
-                        ))
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                        .font(.system(size: 11))
-                    }
-
-                    // Test connection + fetch models
-                    HStack(spacing: 8) {
-                        Text(" ")
-                            .frame(width: 50, alignment: .leading)
-
-                        Button(action: { testConnection() }) {
-                            if isTesting {
-                                HStack(spacing: 3) {
-                                    ProgressView().scaleEffect(0.7).frame(width: 14, height: 14)
-                                    Text("测试中...").font(.system(size: 11, weight: .bold))
-                                }
-                            } else {
-                                ButtonLabel(icon: "play.circle", text: "测试连接")
-                            }
-                        }
-                        .primaryActionStyle()
-                        .disabled(!canTest || isTesting)
-                        .help("验证 API 连通性并获取可用模型列表")
-                    }
-
-                    // Result
-                    if let result = testResult {
-                        HStack(spacing: 6) {
-                            Image(systemName: testOK ? "checkmark.circle.fill" : "xmark.circle.fill")
-                                .font(.system(size: 11))
-                                .foregroundStyle(testOK ? .green : .red)
-                            Text(result)
-                                .font(.system(size: 11))
-                                .foregroundStyle(testOK ? .green : .red)
-                        }
-                    }
+                        .disabled(!provider.enabled)
+                        .onChange(of: provider.apiEndpoint) { _ in clearTestResult() }
                 }
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            } else {
-                Spacer().frame(height: 80)
+
+                HStack(spacing: 8) {
+                    Text("API Key")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 50, alignment: .leading)
+                    SecureField("sk-xxxx", text: $provider.apiKey)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.caption, design: .monospaced))
+                        .disabled(!provider.enabled)
+                        .onChange(of: provider.apiKey) { _ in clearTestResult() }
+                }
+
+                HStack(spacing: 8) {
+                    Text("API 路径")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 50, alignment: .leading)
+                    TextField("/v1/chat/completions", text: Binding(
+                        get: { provider.options["api_path"] ?? "" },
+                        set: { newValue in
+                            if newValue.isEmpty {
+                                provider.options.removeValue(forKey: "api_path")
+                            } else {
+                                provider.options["api_path"] = newValue
+                            }
+                            clearTestResult()
+                        }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                    .disabled(!provider.enabled)
+                }
+
+                HStack(spacing: 8) {
+                    Text(" ")
+                        .frame(width: 50, alignment: .leading)
+                    Toggle("自动同步可用模型", isOn: Binding(
+                        get: { provider.options["auto_models"] == "true" },
+                        set: { newValue in
+                            if newValue {
+                                provider.options["auto_models"] = "true"
+                            } else {
+                                provider.options.removeValue(forKey: "auto_models")
+                            }
+                            clearTestResult()
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .font(.system(size: 11))
+                    .disabled(!provider.enabled)
+                    .help("启动或测试时自动从接口获取最新模型列表")
+                }
+
+                // Test connection + fetch models + inline result
+                HStack(spacing: 8) {
+                    Text(" ")
+                        .frame(width: 50, alignment: .leading)
+
+                    Button(action: { testConnection() }) {
+                        if isTesting {
+                            HStack(spacing: 3) {
+                                ProgressView().scaleEffect(0.7).frame(width: 14, height: 14)
+                                Text("测试中...").font(.system(size: 11, weight: .bold))
+                            }
+                        } else {
+                            ButtonLabel(icon: "play.circle", text: "测试连接")
+                        }
+                    }
+                    .primaryActionStyle()
+                    .disabled(!canTest || !provider.enabled || isTesting)
+                    .help("验证 API 连通性并获取可用模型列表")
+
+                    if let result = testResult {
+                        HStack(spacing: 4) {
+                            Image(systemName: testOK ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .font(.system(size: 10))
+                            Text(result)
+                                .font(.system(size: 10))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(testOK ? .green : .red)
+                    }
+
+                    Spacer()
+                }
             }
+            .opacity(provider.enabled ? 1 : 0.55)
         }
+        .frame(maxWidth: .infinity, minHeight: 220, alignment: .topLeading)
         .padding(16)
-        .background(provider.enabled ? Color.green.opacity(0.04) : Color.gray.opacity(0.02))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(provider.enabled ? Color(nsColor: .textBackgroundColor) : Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        )
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(provider.enabled ? Color.green.opacity(0.2) : Color.gray.opacity(0.1), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(provider.enabled ? Color.green.opacity(0.35) : Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
         )
         .animation(.easeInOut(duration: 0.2), value: provider.enabled)
     }
@@ -896,7 +1175,9 @@ struct LLMRouterRuleRow: View {
 
 // MARK: - Preview
 
+#if false
 #Preview {
     ModelRoutingView()
         .environmentObject(LauncherAppState())
 }
+#endif

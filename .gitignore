@@ -45,5 +45,5 @@ dist/
 # AntigravityTun
 AntigravityTun/
 
-# Derived data cache
+# Local build artifacts (CLI builds with redirected DerivedData)
 .derived_data/

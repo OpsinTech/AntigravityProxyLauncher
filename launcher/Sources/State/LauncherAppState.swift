@@ -407,6 +407,8 @@ final class LauncherAppState: ObservableObject {
     func loadModelRoutingConfigs() {
         do {
             modelRoutingConfig = try modelRoutingService.load()
+            // 确保 Ollama / vLLM / LM Studio 三个本地模型服务卡片始终存在
+            modelRoutingConfig.ensureBuiltinLocalProviders()
             modelRoutingErrorMessage = nil
             hasLoadedModelRoutingConfigs = true
         } catch {
