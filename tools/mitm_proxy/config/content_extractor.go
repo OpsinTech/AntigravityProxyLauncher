@@ -34,7 +34,8 @@ func ExtractLatestUserContent(body []byte, format string) string {
 	}
 }
 
-// extractLatestOpenAIUserContent returns the content of the last user message.
+// extractLatestOpenAIUserContent returns the content of the last user message,
+// prioritizing the actual human prompt in <USER_REQUEST> tags if present.
 func extractLatestOpenAIUserContent(body []byte) string {
 	var req struct {
 		Messages []struct {
@@ -45,15 +46,31 @@ func extractLatestOpenAIUserContent(body []byte) string {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return ""
 	}
+
+	// First pass: search backwards for a user message containing <USER_REQUEST>
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {
-			return extractContentString(req.Messages[i].Content)
+			text := extractContentString(req.Messages[i].Content)
+			if strings.Contains(text, "<USER_REQUEST>") {
+				return extractUserPrompt(text)
+			}
+		}
+	}
+
+	// Fallback: return the text of the latest user message
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			text := extractContentString(req.Messages[i].Content)
+			if text != "" {
+				return text
+			}
 		}
 	}
 	return ""
 }
 
-// extractLatestAnthropicUserContent returns the content of the last user message.
+// extractLatestAnthropicUserContent returns the content of the last user message,
+// prioritizing the actual human prompt in <USER_REQUEST> tags if present.
 func extractLatestAnthropicUserContent(body []byte) string {
 	var req struct {
 		Messages []struct {
@@ -64,16 +81,31 @@ func extractLatestAnthropicUserContent(body []byte) string {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return ""
 	}
+
+	// First pass: search backwards for a user message containing <USER_REQUEST>
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {
-			return extractContentString(req.Messages[i].Content)
+			text := extractContentString(req.Messages[i].Content)
+			if strings.Contains(text, "<USER_REQUEST>") {
+				return extractUserPrompt(text)
+			}
+		}
+	}
+
+	// Fallback: return the text of the latest user message
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			text := extractContentString(req.Messages[i].Content)
+			if text != "" {
+				return text
+			}
 		}
 	}
 	return ""
 }
 
-// extractLatestGeminiUserContent returns the text of the last user-turned content.
-// Gemini uses "user" role in contents[]; systemInstruction is ignored.
+// extractLatestGeminiUserContent returns the text of the last user-turned content,
+// prioritizing the actual human prompt in <USER_REQUEST> tags if present.
 func extractLatestGeminiUserContent(body []byte) string {
 	var req struct {
 		Contents []struct {
@@ -101,18 +133,60 @@ func extractLatestGeminiUserContent(body []byte) string {
 			req.Contents = w2.Contents
 		}
 	}
+
+	// Helper to extract text from a single Contents turn
+	getTurnText := func(turn struct {
+		Role  string `json:"role"`
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	}) string {
+		var texts []string
+		for _, p := range turn.Parts {
+			if p.Text != "" {
+				texts = append(texts, p.Text)
+			}
+		}
+		return strings.Join(texts, "\n")
+	}
+
+	// First pass: search backwards for a user message containing <USER_REQUEST>
 	for i := len(req.Contents) - 1; i >= 0; i-- {
 		if req.Contents[i].Role == "user" {
-			var texts []string
-			for _, p := range req.Contents[i].Parts {
-				if p.Text != "" {
-					texts = append(texts, p.Text)
-				}
+			turnText := getTurnText(req.Contents[i])
+			if strings.Contains(turnText, "<USER_REQUEST>") {
+				return extractUserPrompt(turnText)
 			}
-			return strings.Join(texts, "\n")
+		}
+	}
+
+	// Fallback: return the text of the latest non-empty user message
+	for i := len(req.Contents) - 1; i >= 0; i-- {
+		if req.Contents[i].Role == "user" {
+			turnText := getTurnText(req.Contents[i])
+			if turnText != "" {
+				return turnText
+			}
 		}
 	}
 	return ""
+}
+
+// extractUserPrompt attempts to extract content enclosed in <USER_REQUEST> tags.
+// If found, returns the inner user prompt; otherwise returns the original text.
+func extractUserPrompt(text string) string {
+	const startTag = "<USER_REQUEST>"
+	const endTag = "</USER_REQUEST>"
+	idx := strings.LastIndex(text, startTag)
+	if idx != -1 {
+		after := text[idx+len(startTag):]
+		endIdx := strings.Index(after, endTag)
+		if endIdx != -1 {
+			return strings.TrimSpace(after[:endIdx])
+		}
+		return strings.TrimSpace(after)
+	}
+	return text
 }
 
 // extractOpenAIContent extracts text from an OpenAI-format request.

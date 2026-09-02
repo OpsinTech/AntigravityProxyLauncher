@@ -189,7 +189,24 @@ func (c *RoutingConfig) ResolveLLMRouterTarget(rule *RoutingRule, bodyBytes []by
 
 // matchKeywords checks if content matches keywords by the given mode.
 func matchKeywords(keywords []string, contentLower string, mode string) bool {
+	flattened := make([]string, 0, len(keywords))
 	for _, kw := range keywords {
+		parts := strings.FieldsFunc(kw, func(r rune) bool {
+			return r == ',' || r == '，' || r == '、' || r == ';' || r == '；' || r == '|' || r == '\n' || r == '\t'
+		})
+		for _, p := range parts {
+			trimmed := strings.TrimSpace(p)
+			if trimmed != "" {
+				flattened = append(flattened, trimmed)
+			}
+		}
+	}
+
+	if len(flattened) == 0 {
+		return false
+	}
+
+	for _, kw := range flattened {
 		kwLower := strings.ToLower(kw)
 		matched := strings.Contains(contentLower, kwLower)
 		if mode == "any" && matched {
