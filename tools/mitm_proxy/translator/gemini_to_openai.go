@@ -297,6 +297,7 @@ func (t *GeminiToOpenAI) TranslateStreamChunk(chunk *provider.StreamChunk, sourc
 					"name": state.FunctionCallName,
 					"args": args,
 				},
+				"thought_signature": "skip_thought_signature_validator",
 			})
 		}
 

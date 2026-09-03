@@ -107,3 +107,59 @@ func TestGeminiHandler_GeminiBuiltinModelSubstitution(t *testing.T) {
 		t.Errorf("Modified body did not contain target model: %s", string(bodyBytes))
 	}
 }
+
+func TestEnsureThoughtSignatures(t *testing.T) {
+	// 1. Cloud Code wrapped format with a third-party functionCall (lacking signature)
+	wrappedInput := []byte(`{
+		"model": "gemini-3.7-flash-high",
+		"request": {
+			"contents": [
+				{
+					"role": "user",
+					"parts": [{"text": "hello"}]
+				},
+				{
+					"role": "model",
+					"parts": [
+						{
+							"functionCall": {
+								"name": "default_api:replace_file_content",
+								"args": {"path": "/tmp/a"}
+							}
+						}
+					]
+				}
+			]
+		}
+	}`)
+
+	patched := ensureThoughtSignatures(wrappedInput)
+	if !bytes.Contains(patched, []byte(`"thought_signature":"skip_thought_signature_validator"`)) {
+		t.Errorf("Expected thought_signature to be injected: %s", string(patched))
+	}
+	if bytes.Contains(patched, []byte(`"thoughtSignature"`)) {
+		t.Errorf("Expected no duplicate thoughtSignature field: %s", string(patched))
+	}
+
+	// 2. Direct format with existing signature - must NOT overwrite
+	directExisting := []byte(`{
+		"contents": [
+			{
+				"role": "model",
+				"parts": [
+					{
+						"functionCall": {"name": "view_file"},
+						"thought_signature": "genuine_google_signature_abc123"
+					}
+				]
+			}
+		]
+	}`)
+	unchanged := ensureThoughtSignatures(directExisting)
+	if !bytes.Contains(unchanged, []byte("genuine_google_signature_abc123")) {
+		t.Errorf("Genuine thought_signature was overwritten: %s", string(unchanged))
+	}
+	if bytes.Contains(unchanged, []byte("skip_thought_signature_validator")) {
+		t.Errorf("Should not inject sentinel when genuine signature exists: %s", string(unchanged))
+	}
+}

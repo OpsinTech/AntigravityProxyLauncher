@@ -115,7 +115,10 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 
 	if targetProviderID == "" || targetModel == "" {
 		log.Printf("[Gemini] No routing rule or enabled provider matched for model=%s, passing through", modelName)
+		bodyBytes = ensureThoughtSignatures(bodyBytes)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		r.ContentLength = int64(len(bodyBytes))
+		r.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
 		return r, nil
 	}
 
@@ -137,6 +140,7 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		} else {
 			log.Printf("[Gemini] gemini_builtin: no target model, passing through unchanged")
 		}
+		bodyBytes = ensureThoughtSignatures(bodyBytes)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		r.ContentLength = int64(len(bodyBytes))
 		r.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
@@ -444,5 +448,89 @@ func substituteGeminiModel(body []byte, targetModel string) []byte {
 	if err != nil {
 		return nil
 	}
+	return patched
+}
+
+// SentinelThoughtSignature is Google's official sentinel token to bypass validation
+// when importing conversation history with function calls lacking thought signatures.
+const SentinelThoughtSignature = "skip_thought_signature_validator"
+
+// ensureThoughtSignatures scans the request body for any model turns containing
+// functionCall parts that lack a thought_signature. If any are found, it injects
+// Google's official sentinel value "skip_thought_signature_validator" to prevent
+// HTTP 400 Bad Request errors when switching from third-party models to Gemini thinking models.
+func ensureThoughtSignatures(body []byte) []byte {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return body
+	}
+
+	var contents []interface{}
+	// Check if wrapped in "request" (Cloud Code PA format: {"model": "...", "request": {"contents": [...]}})
+	if reqMap, ok := raw["request"].(map[string]interface{}); ok {
+		if c, ok := reqMap["contents"].([]interface{}); ok {
+			contents = c
+		}
+	}
+	// Direct Gemini format
+	if contents == nil {
+		if c, ok := raw["contents"].([]interface{}); ok {
+			contents = c
+		}
+	}
+
+	if len(contents) == 0 {
+		return body
+	}
+
+	modifiedCount := 0
+	for _, item := range contents {
+		turn, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		role, _ := turn["role"].(string)
+		if role != "model" {
+			continue
+		}
+		parts, ok := turn["parts"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, p := range parts {
+			partMap, ok := p.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if partMap["functionCall"] == nil {
+				continue
+			}
+			sig1, _ := partMap["thought_signature"].(string)
+			sig2, _ := partMap["thoughtSignature"].(string)
+			if sig1 == "" && sig2 == "" {
+				partMap["thought_signature"] = SentinelThoughtSignature
+				delete(partMap, "thoughtSignature")
+				modifiedCount++
+			} else if sig2 != "" && sig1 == "" {
+				partMap["thought_signature"] = sig2
+				delete(partMap, "thoughtSignature")
+				modifiedCount++
+			} else if sig1 != "" && sig2 != "" {
+				delete(partMap, "thoughtSignature")
+				modifiedCount++
+			}
+		}
+	}
+
+	if modifiedCount == 0 {
+		return body
+	}
+
+	patched, err := json.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	log.Printf("[Gemini] Injected %s into %d functionCall part(s) lacking thought signature",
+		SentinelThoughtSignature, modifiedCount)
 	return patched
 }
