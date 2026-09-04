@@ -230,8 +230,18 @@ final class PatchService {
                 esac
             done
             SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+            # Clean up terminal proxy environment variables that conflict with dylib tun
+            unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy
+
             export DYLD_INSERT_LIBRARIES="$SCRIPT_DIR/libAntigravityTun.dylib"
             export ANTIGRAVITY_CONFIG="$HOME/.config/antigravity/proxy_config.json"
+            # Trust MITM proxy CA bundle for Go binaries and Node.js
+            if [ -f "$HOME/.config/antigravity/combined_ca.pem" ]; then
+                export SSL_CERT_FILE="$HOME/.config/antigravity/combined_ca.pem"
+            fi
+            if [ -f "$HOME/.config/antigravity/goproxy_ca.pem" ]; then
+                export NODE_EXTRA_CA_CERTS="$HOME/.config/antigravity/goproxy_ca.pem"
+            fi
             # Redirect dylib logs to file to keep stderr clean for CLI output
             export ANTIGRAVITY_LOG_FILE=1
             export ANTIGRAVITY_LOG_PATH="$HOME/.config/antigravity/antigravity_proxy.$$.log"
