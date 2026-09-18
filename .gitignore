@@ -47,3 +47,4 @@ AntigravityTun/
 
 # Local build artifacts (CLI builds with redirected DerivedData)
 .derived_data/
+.toolchain/
