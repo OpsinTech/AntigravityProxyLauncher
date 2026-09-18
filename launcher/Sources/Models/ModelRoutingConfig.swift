@@ -235,24 +235,56 @@ extension ModelRoutingConfig {
             apiEndpoint: "copilot.tencent.com",
             apiKey: "",
             models: [
+                // 混元（腾讯自研）
+                "hy4-preview",
+                "hy3-preview",
+                "hy3",
+                "hunyuan-chat",
+                // DeepSeek
+                "deepseek-v4.1-flash",
+                "deepseek-v4-pro",
+                "deepseek-v4-flash",
+                "deepseek-v3.2",
+                "deepseek-v3",
+                "deepseek-r1",
+                // 智谱 GLM
+                "glm-5.3",
                 "glm-5.2",
                 "glm-5.1",
                 "glm-5.0",
+                "glm-5v-turbo",
+                // 月之暗面 Kimi
                 "kimi-k3",
                 "kimi-k2.7",
                 "kimi-k2.6",
                 "kimi-k2.5",
-                "deepseek-v4-pro",
-                "deepseek-v4-flash",
-                "deepseek-v3",
-                "deepseek-r1",
-                "hunyuan-chat",
-                "hy3",
-                "hy4-preview"
-                // TODO: 限免版 hy4 模型 ID 待确认后在此追加（例如 hy4-preview-free / hy4-xxx）
+                // MiniMax
+                "minimax-m3",
+                "minimax-m2.7",
+                // Auto 自动路由（实测落到 deepseek-v4.1-flash）
+                "auto"
             ],
             options: [
                 "api_path": "/v2/chat/completions"
+            ]
+        ),
+        ProviderConfig(
+            id: "joycode",
+            name: "JoyCode",
+            enabled: false,
+            type: "joycode",
+            apiEndpoint: "api-ai.jd.com",
+            apiKey: "",
+            models: [
+                "JoyAI-Code-1.5",
+                "GLM-5.3",
+                "Kimi-K2.6",
+                "MiniMax-M3",
+                "Doubao-Seed-2.0-pro"
+            ],
+            options: [
+                "auto_models": "true",
+                "tenant": ""
             ]
         ),
         ProviderConfig(
