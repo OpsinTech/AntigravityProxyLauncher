@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/config"
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/provider"
@@ -163,3 +164,41 @@ func TestEnsureThoughtSignatures(t *testing.T) {
 		t.Errorf("Should not inject sentinel when genuine signature exists: %s", string(unchanged))
 	}
 }
+
+func TestGeminiHandler_FetchAvailableModelsCache(t *testing.T) {
+	routingCfg := &config.RoutingConfig{}
+	provReg := provider.NewRegistry()
+	transReg := translator.NewRegistry()
+	h := NewGeminiHandler(provReg, transReg, routingCfg)
+
+	// Pre-populate cache
+	cachedJSON := []byte(`{"models":{"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)"}}}`)
+	h.modelsCache.mu.Lock()
+	h.modelsCache.body = cachedJSON
+	h.modelsCache.updatedAt = time.Now()
+	h.modelsCache.modelsSummary = "gemini-3.8-flash-high=Gemini 3.8 Flash (High);"
+	h.modelsCache.mu.Unlock()
+
+	req := httptest.NewRequest("POST", "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels", nil)
+	ctx := &goproxy.ProxyCtx{}
+
+	outReq, resp := h.Handle(req, ctx)
+	if outReq == nil {
+		t.Fatalf("Expected non-nil outReq")
+	}
+	if resp == nil {
+		t.Fatalf("Expected cached http.Response, got nil")
+	}
+	if resp.StatusCode != 200 {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response body: %v", err)
+	}
+	if !bytes.Equal(body, cachedJSON) {
+		t.Errorf("Expected body %s, got %s", string(cachedJSON), string(body))
+	}
+}
+

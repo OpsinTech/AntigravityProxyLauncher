@@ -8,9 +8,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/config"
@@ -19,10 +21,21 @@ import (
 	"github.com/elazarl/goproxy"
 )
 
+const defaultModelsCacheTTL = 12 * time.Hour
+
+type modelsCache struct {
+	mu            sync.RWMutex
+	body          []byte
+	header        http.Header
+	updatedAt     time.Time
+	modelsSummary string
+}
+
 type GeminiHandler struct {
 	providerRegistry   *provider.Registry
 	translatorRegistry *translator.Registry
 	routingConfig      *config.RoutingConfig
+	modelsCache        *modelsCache
 }
 
 func NewGeminiHandler(
@@ -34,6 +47,7 @@ func NewGeminiHandler(
 		providerRegistry:   providerRegistry,
 		translatorRegistry: translatorRegistry,
 		routingConfig:      routingConfig,
+		modelsCache:        &modelsCache{},
 	}
 }
 
@@ -64,6 +78,11 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		return r, nil
 	}
 
+	// fetchAvailableModels: query models from local cache to avoid querying Google on every check
+	if strings.Contains(r.URL.Path, "fetchAvailableModels") {
+		return h.handleFetchAvailableModels(r, ctx)
+	}
+
 	log.Printf("[Gemini] Intercepted: %s %s", r.URL.Host, r.URL.Path)
 
 	// Always attempt to read body and extract model — don't restrict by path.
@@ -77,9 +96,6 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	modelName := h.extractModelFromBody(bodyBytes)
 	if modelName == "" {
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		if strings.Contains(r.URL.Path, "fetchAvailableModels") {
-			return h.handlePassthrough(r, ctx)
-		}
 		return r, nil
 	}
 
@@ -207,20 +223,72 @@ func isNonModelRpc(path string) bool {
 	return false
 }
 
-func (h *GeminiHandler) handlePassthrough(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+func cloneHeader(src http.Header) http.Header {
+	if src == nil {
+		return make(http.Header)
+	}
+	dst := make(http.Header, len(src))
+	for k, vv := range src {
+		dst[k] = append([]string(nil), vv...)
+	}
+	return dst
+}
+
+func (h *GeminiHandler) handleFetchAvailableModels(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+	// 1. Check in-memory cache
+	h.modelsCache.mu.RLock()
+	hasCached := len(h.modelsCache.body) > 0 && time.Since(h.modelsCache.updatedAt) < defaultModelsCacheTTL
+	if hasCached {
+		cachedBody := h.modelsCache.body
+		respHeader := cloneHeader(h.modelsCache.header)
+		age := time.Since(h.modelsCache.updatedAt).Round(time.Second)
+		h.modelsCache.mu.RUnlock()
+
+		if os.Getenv("MITM_DEBUG") == "true" {
+			log.Printf("[Gemini] fetchAvailableModels: served from cache (%d bytes, age: %v)", len(cachedBody), age)
+		}
+
+		return r, &http.Response{
+			StatusCode:    http.StatusOK,
+			ProtoMajor:    1,
+			ProtoMinor:    1,
+			Header:        respHeader,
+			Body:          io.NopCloser(bytes.NewReader(cachedBody)),
+			ContentLength: int64(len(cachedBody)),
+			Request:       r,
+		}
+	}
+	h.modelsCache.mu.RUnlock()
+
+	// 2. Cache miss or expired: query upstream Google
+	log.Printf("[Gemini] fetchAvailableModels: cache miss/expired, fetching from upstream (%s %s)", r.URL.Host, r.URL.Path)
+
 	resp, err := ctx.RoundTrip(r)
 	if err != nil {
-		log.Printf("[Gemini] Passthrough error: %v", err)
+		log.Printf("[Gemini] fetchAvailableModels upstream error: %v", err)
+		h.modelsCache.mu.RLock()
+		if len(h.modelsCache.body) > 0 {
+			cachedBody := h.modelsCache.body
+			respHeader := cloneHeader(h.modelsCache.header)
+			h.modelsCache.mu.RUnlock()
+			log.Printf("[Gemini] fetchAvailableModels: upstream failed, serving stale cache")
+			return r, &http.Response{
+				StatusCode:    http.StatusOK,
+				ProtoMajor:    1,
+				ProtoMinor:    1,
+				Header:        respHeader,
+				Body:          io.NopCloser(bytes.NewReader(cachedBody)),
+				ContentLength: int64(len(cachedBody)),
+				Request:       r,
+			}
+		}
+		h.modelsCache.mu.RUnlock()
 		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream error")
 	}
-	if resp == nil || resp.Body == nil {
-		log.Printf("[Gemini] Passthrough returned nil response or body")
-		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream returned empty response")
-	}
 
-	// Never buffer streaming SSE or chunked responses
-	if resp.Header.Get("Content-Type") == "text/event-stream" || strings.Contains(r.URL.Path, "streamGenerateContent") {
-		return r, resp
+	if resp == nil || resp.Body == nil {
+		log.Printf("[Gemini] fetchAvailableModels upstream returned nil response or body")
+		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream returned empty response")
 	}
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
@@ -237,11 +305,22 @@ func (h *GeminiHandler) handlePassthrough(r *http.Request, ctx *goproxy.ProxyCtx
 		}
 	}
 
-	// Debug aid: log the model list returned by fetchAvailableModels so we can
-	// discover the exact model IDs the Cloud Code backend accepts and watch for
-	// model ID changes over time. Only the model ID + displayName are logged.
-	if strings.Contains(r.URL.Path, "fetchAvailableModels") {
-		log.Printf("[Gemini] fetchAvailableModels models: %s", summarizeAvailableModels(bodyBytes))
+	summary := summarizeAvailableModels(bodyBytes)
+
+	h.modelsCache.mu.Lock()
+	changed := summary != h.modelsCache.modelsSummary
+	h.modelsCache.body = bodyBytes
+	h.modelsCache.header = cloneHeader(resp.Header)
+	h.modelsCache.header.Del("Content-Encoding")
+	h.modelsCache.header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
+	h.modelsCache.updatedAt = time.Now()
+	h.modelsCache.modelsSummary = summary
+	h.modelsCache.mu.Unlock()
+
+	if changed {
+		log.Printf("[Gemini] fetchAvailableModels models updated: %s", summary)
+	} else if os.Getenv("MITM_DEBUG") == "true" {
+		log.Printf("[Gemini] fetchAvailableModels models refreshed (no changes)")
 	}
 
 	resp.Header.Del("Content-Encoding")
