@@ -29,24 +29,43 @@ jobs:
       - name: Test
         run: go test -race -count=1 ./...
 
-  # Swift Launcher build check
+  # Swift Launcher build check. The Xcode project is generated from project.yml
+  # so CI uses the same Swift 5 / minimal-concurrency settings as release builds.
   swift-build:
     name: Swift Build
-    runs-on: macos-14
+    runs-on: macos-26
     defaults:
       run:
         working-directory: launcher
     steps:
       - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
       - name: Build (debug)
-        run: swift build --configuration debug
+        run: |
+          xcodebuild -project AntigravityProxyLauncher.xcodeproj \
+            -scheme AntigravityProxyLauncher \
+            -configuration Debug \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
       - name: Build (release)
-        run: swift build --configuration release
+        run: |
+          xcodebuild -project AntigravityProxyLauncher.xcodeproj \
+            -scheme AntigravityProxyLauncher \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
 
-  # C++ dylib build check
+  # C++ dylib build check. The checked-in project uses Xcode project format 77.
   cpp-build:
     name: C++ Build
-    runs-on: macos-14
+    runs-on: macos-26
     defaults:
       run:
         working-directory: AntigravityTun
@@ -57,5 +76,9 @@ jobs:
           xcodebuild -project AntigravityTun.xcodeproj \
             -scheme AntigravityTun \
             -configuration Release \
+            -destination 'generic/platform=macOS' \
+            MACOSX_DEPLOYMENT_TARGET=13.0 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
             -derivedDataPath build \
             build
