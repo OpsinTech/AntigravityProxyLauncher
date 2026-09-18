@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$(dirname "$0")/../launcher" && pwd)"
 DYLIB_DIR="$(cd "$(dirname "$0")/../AntigravityTun" && pwd)"
 OUTPUT_DIR="$(cd "$(dirname "$0")/../build_output" && pwd)"
@@ -45,13 +46,14 @@ GOOS=darwin GOARCH=arm64 go build -o mitm_proxy_arm64 .
 GOOS=darwin GOARCH=amd64 go build -o mitm_proxy_x86_64 .
 lipo -create mitm_proxy_arm64 mitm_proxy_x86_64 -output mitm_proxy
 rm mitm_proxy_arm64 mitm_proxy_x86_64
-echo "  Proxy: $(lipo -info "mitm_proxy" | head -1)"
+echo "  Proxy: $(lipo -info mitm_proxy | head -1)"
 
 # --- Step 2: Build app for arm64 ---
 echo "[2/5] Building app for arm64..."
 cd "$PROJECT_DIR"
 xcodebuild -project AntigravityProxyLauncher.xcodeproj -scheme AntigravityProxyLauncher \
   -configuration Release -arch arm64 \
+  MARKETING_VERSION="$VERSION" \
   CONFIGURATION_BUILD_DIR="$OUTPUT_DIR/arm64" \
   build 2>&1 | grep -E "BUILD|error" || true
 
@@ -59,6 +61,7 @@ xcodebuild -project AntigravityProxyLauncher.xcodeproj -scheme AntigravityProxyL
 echo "[3/5] Building app for x86_64..."
 xcodebuild -project AntigravityProxyLauncher.xcodeproj -scheme AntigravityProxyLauncher \
   -configuration Release -arch x86_64 \
+  MARKETING_VERSION="$VERSION" \
   CONFIGURATION_BUILD_DIR="$OUTPUT_DIR/x86_64" \
   build 2>&1 | grep -E "BUILD|error" || true
 
@@ -95,18 +98,16 @@ cp "$PROXY_DIR/mitm_proxy" "$UNIVERSAL_APP/Contents/Resources/mitm_proxy"
 cp "$PROXY_DIR/.env" "$UNIVERSAL_APP/Contents/Resources/.env"
 
 # --- Step 5: Package ---
-echo "[5/5] Creating DMG and ZIP..."
+echo "[5/5] Creating drag-to-install DMG and ZIP..."
 DMG_NAME="${APP_NAME}_${VERSION}-macos_x86_64_arm64.dmg"
 ZIP_NAME="${APP_NAME}_${VERSION}-macos_x86_64_arm64.zip"
 
 # Remove old packages
 rm -f "$OUTPUT_DIR/$DMG_NAME" "$OUTPUT_DIR/$ZIP_NAME"
 
-# Create DMG
-hdiutil create -volname "${APP_NAME}" \
-  -srcfolder "$UNIVERSAL_APP" \
-  -ov -format UDZO \
-  "$OUTPUT_DIR/$DMG_NAME" 2>&1 | tail -1
+# Create styled drag-to-install DMG (App + Applications alias)
+bash "$SCRIPT_DIR/create_dmg.sh" \
+  "$UNIVERSAL_APP" "$APP_NAME" "$OUTPUT_DIR/$DMG_NAME"
 
 # Create ZIP
 cd "$OUTPUT_DIR"
