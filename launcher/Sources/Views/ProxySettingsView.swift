@@ -22,6 +22,21 @@ struct ProxySettingsView: View {
         )
     }
 
+    /// 模型映射总开关:切换即写入 proxy_config.json(与首页行为一致)
+    private var modelRoutingToggleBinding: Binding<Bool> {
+        Binding(
+            get: { appState.proxyConfigDraft.mitm?.modelRoutingEnabled ?? false },
+            set: { newValue in
+                if appState.proxyConfigDraft.mitm != nil {
+                    appState.proxyConfigDraft.mitm?.modelRoutingEnabled = newValue
+                } else {
+                    appState.proxyConfigDraft.mitm = .init(modelRoutingEnabled: newValue)
+                }
+                appState.saveProxyConfig()
+            }
+        )
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -166,8 +181,14 @@ struct ProxySettingsView: View {
                         .disabled(!appState.proxyConfigDraft.fakeIP.enabled)
                 }
             } else {
+                // 模型映射开关直接暴露:切换即保存,无需进入编辑模式
+                settingRow(label: "模型映射", width: 72) {
+                    Toggle("", isOn: modelRoutingToggleBinding)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .help("开启或关闭后需重新「修复应用」方可生效")
+                }
                 readOnlyRow(label: "日志级别", value: appState.proxyConfigDraft.logLevel)
-                readOnlyRow(label: "模型映射", value: appState.proxyConfigDraft.mitm?.modelRoutingEnabled == true ? "开" : "关")
                 readOnlyRow(label: "FakeIP", value: appState.proxyConfigDraft.fakeIP.enabled ? "开 · \(appState.proxyConfigDraft.fakeIP.cidr)" : "关")
             }
         }
