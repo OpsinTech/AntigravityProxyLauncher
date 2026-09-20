@@ -729,25 +729,15 @@ struct ProviderCard: View {
     @State private var testOK = false
     private let modelService = ModelListService()
 
-    // JoyCode ptKey 自动获取（读本机 JoyCode IDE 登录态）
-    @State private var isFetchingJoyCode = false
-    @State private var joyCodeFetchMessage: String?
-    private let joyCodeCredService = JoyCodeCredentialService()
-
     // Local model servers (ollama / vllm / llama.cpp) may not need an API key,
     // so only the endpoint is required to run a connectivity test.
     private var canTest: Bool { !provider.apiEndpoint.isEmpty }
-
-    /// JoyCode 走 JD 彩色网关（HMAC 签名 + ptKey 登录凭证），非标准 OpenAI 接口，
-    /// 需要独立的表单字段（tenant）与测试逻辑，且无 "API 路径" 概念。
-    private var isJoyCode: Bool { provider.type == "joycode" }
 
     private var providerWebsite: URL? {
         switch provider.id {
         case "deepseek":    return URL(string: "https://platform.deepseek.com/api_keys")
         case "ofox":        return URL(string: "https://app.ofox.ai/")
         case "codebuddy":   return URL(string: "https://www.codebuddy.cn/")
-        case "joycode":     return URL(string: "https://joycode.jd.com/")
         case "tokenrouter": return URL(string: "https://www.tokenrouter.com/docs/tokenrouter-feature-guide/")
         case "openrouter":  return URL(string: "https://openrouter.ai/keys")
         default:
@@ -798,80 +788,32 @@ struct ProviderCard: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(width: 50, alignment: .leading)
-                    SecureField(isJoyCode ? "ptKey 登录令牌" : "sk-xxxx", text: $provider.apiKey)
+                    SecureField("sk-xxxx", text: $provider.apiKey)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.caption, design: .monospaced))
                         .disabled(!provider.enabled)
                         .onChange(of: provider.apiKey) { _ in clearTestResult() }
-                        .help(isJoyCode
-                              ? "ptKey 登录凭证（base64），从 JoyCode IDE 的 state.vscdb 读取；非标准 API Key"
-                              : "API Key")
                 }
 
-                if isJoyCode {
-                    HStack(spacing: 8) {
-                        Text("租户")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 50, alignment: .leading)
-                        TextField("tenant（可选）", text: Binding(
-                            get: { provider.options["tenant"] ?? "" },
-                            set: { newValue in
-                                if newValue.isEmpty {
-                                    provider.options["tenant"] = ""
-                                } else {
-                                    provider.options["tenant"] = newValue
-                                }
-                                clearTestResult()
+                HStack(spacing: 8) {
+                    Text("API 路径")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 50, alignment: .leading)
+                    TextField("/v1/chat/completions", text: Binding(
+                        get: { provider.options["api_path"] ?? "" },
+                        set: { newValue in
+                            if newValue.isEmpty {
+                                provider.options.removeValue(forKey: "api_path")
+                            } else {
+                                provider.options["api_path"] = newValue
                             }
-                        ))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.caption, design: .monospaced))
-                        .disabled(!provider.enabled)
-                        .help("JoyCode 登录态中的 tenant 名称（可留空）")
-                    }
-
-                    HStack(spacing: 8) {
-                        Text(" ").frame(width: 50)
-                        Button(action: autoFetchJoyCodeCredentials) {
-                            HStack(spacing: 4) {
-                                if isFetchingJoyCode {
-                                    ProgressView().controlSize(.small)
-                                }
-                                Text(isFetchingJoyCode ? "正在读取…" : "自动获取 ptKey / 租户")
-                                    .font(.system(size: 11))
-                            }
+                            clearTestResult()
                         }
-                        .help("从本机 JoyCode IDE 登录态（state.vscdb）读取 ptKey 与 tenant 并填入上方；成功后点「保存并应用」写入 model_routing.json。JoyCode 版本更新后重新点击即可刷新。")
-                        if let msg = joyCodeFetchMessage {
-                            Text(msg)
-                                .font(.system(size: 11))
-                                .foregroundStyle(msg.contains("已填入") ? .green : .red)
-                                .lineLimit(2)
-                                .help(msg)
-                        }
-                    }
-                } else {
-                    HStack(spacing: 8) {
-                        Text("API 路径")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 50, alignment: .leading)
-                        TextField("/v1/chat/completions", text: Binding(
-                            get: { provider.options["api_path"] ?? "" },
-                            set: { newValue in
-                                if newValue.isEmpty {
-                                    provider.options.removeValue(forKey: "api_path")
-                                } else {
-                                    provider.options["api_path"] = newValue
-                                }
-                                clearTestResult()
-                            }
-                        ))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.caption, design: .monospaced))
-                        .disabled(!provider.enabled)
-                    }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                    .disabled(!provider.enabled)
                 }
 
                 HStack(spacing: 8) {
@@ -981,58 +923,11 @@ struct ProviderCard: View {
         return headers
     }
 
-    /// 从本机 JoyCode IDE 登录态读取 ptKey/tenant 并填入卡片（成功后由用户点「保存并应用」持久化）。
-    private func autoFetchJoyCodeCredentials() {
-        guard !isFetchingJoyCode else { return }
-        isFetchingJoyCode = true
-        joyCodeFetchMessage = nil
-        testResult = nil
-        Task {
-            do {
-                let creds = try joyCodeCredService.readCredentials()
-                await MainActor.run {
-                    provider.apiKey = creds.ptKey
-                    provider.options["tenant"] = creds.tenant
-                    joyCodeFetchMessage = "已填入（租户: \(creds.tenant.isEmpty ? "空" : creds.tenant)），请点「保存并应用」写入配置"
-                    isFetchingJoyCode = false
-                }
-            } catch {
-                await MainActor.run {
-                    joyCodeFetchMessage = "获取失败: \(error.localizedDescription)"
-                    isFetchingJoyCode = false
-                }
-            }
-        }
-    }
-
     private func testConnection() {
         guard canTest else { return }
         isTesting = true
         testResult = nil
         Task {
-            // JoyCode 走签名彩色网关（非标准 /v1/models），单独处理。
-            if isJoyCode {
-                do {
-                    let models = try await modelService.fetchJoyCodeModels(
-                        ptKey: provider.apiKey,
-                        tenant: provider.options["tenant"] ?? "",
-                        endpoint: provider.apiEndpoint
-                    )
-                    await MainActor.run {
-                        provider.models = models
-                        testOK = true
-                        testResult = "连接成功，已获取 \(models.count) 个模型"
-                        isTesting = false
-                    }
-                } catch {
-                    await MainActor.run {
-                        testOK = false
-                        testResult = "连接失败: \(error.localizedDescription)"
-                        isTesting = false
-                    }
-                }
-                return
-            }
             do {
                 let models = try await modelService.fetchModels(
                     endpoint: provider.apiEndpoint,

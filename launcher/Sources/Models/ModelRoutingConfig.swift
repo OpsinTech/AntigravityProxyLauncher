@@ -269,25 +269,6 @@ extension ModelRoutingConfig {
             ]
         ),
         ProviderConfig(
-            id: "joycode",
-            name: "JoyCode",
-            enabled: false,
-            type: "joycode",
-            apiEndpoint: "api-ai.jd.com",
-            apiKey: "",
-            models: [
-                "JoyAI-Code-1.5",
-                "GLM-5.3",
-                "Kimi-K2.6",
-                "MiniMax-M3",
-                "Doubao-Seed-2.0-pro"
-            ],
-            options: [
-                "auto_models": "true",
-                "tenant": ""
-            ]
-        ),
-        ProviderConfig(
             id: "tokenrouter",
             name: "TokenRouter",
             enabled: false,

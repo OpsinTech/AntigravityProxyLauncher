@@ -118,13 +118,11 @@ func main() {
 
 	// Register provider factories
 	provider.RegisterOpenAIProvider(providerRegistry)
-	provider.RegisterJoyCodeProvider(providerRegistry)
 
 	// Register translators
 	translator.RegisterAnthropicToOpenAI(translatorRegistry)
 	translator.RegisterGeminiToOpenAI(translatorRegistry)
 	translator.RegisterOpenAIToOpenAI(translatorRegistry)
-	translator.RegisterJoyCodeTranslators(translatorRegistry)
 
 	// Load configuration
 	modelRouting := config.LoadModelRouting()
