@@ -73,9 +73,13 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		return r, nil
 	}
 
-	// Fast bypass for known internal auxiliary/telemetry RPCs that never carry model payloads
+	// Fast bypass for known internal auxiliary/telemetry RPCs that never carry model payloads.
+	// These are the auth/session calls (loadCodeAssist, listExperiments, fetchUserInfo, ...)
+	// that keep the IDE/CLI login alive — route them through the retry-hardened
+	// passthrough so a transient upstream disconnect (EOF) does not surface as a
+	// dead login page with no feedback.
 	if isNonModelRpc(r.URL.Path) {
-		return r, nil
+		return h.geminiPassthrough(r, ctx)
 	}
 
 	// fetchAvailableModels: query models from local cache to avoid querying Google on every check
@@ -95,8 +99,9 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 
 	modelName := h.extractModelFromBody(bodyBytes)
 	if modelName == "" {
+		// Unknown/auxiliary POST: passthrough with transient-failure retry.
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return r, nil
+		return h.geminiPassthrough(r, ctx)
 	}
 
 	log.Printf("[Gemini] Detected model: %s, searching routing rules...", modelName)
@@ -135,7 +140,7 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		r.ContentLength = int64(len(bodyBytes))
 		r.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-		return r, nil
+		return h.geminiPassthrough(r, ctx)
 	}
 
 	log.Printf("[Gemini] Rule matched: %s -> %s @ %s", modelName, targetModel, targetProviderID)
@@ -149,7 +154,7 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 			if patched == nil {
 				log.Printf("[Gemini] Failed to substitute model for gemini_builtin, passing through")
 				r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-				return r, nil
+				return h.geminiPassthrough(r, ctx)
 			}
 			log.Printf("[Gemini] gemini_builtin: substituting model %s -> %s", modelName, targetModel)
 			bodyBytes = patched
@@ -160,7 +165,9 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		r.ContentLength = int64(len(bodyBytes))
 		r.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-		return r, nil
+		// gemini_builtin keeps the live Google stream: the retry helper forwards
+		// it unbuffered as soon as the headers arrive.
+		return h.geminiPassthrough(r, ctx)
 	}
 
 	// Local model servers (ollama / vllm / llama.cpp) often need no API key,
@@ -169,28 +176,28 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	if providerConfig == nil {
 		log.Printf("[Gemini] Provider not configured: %s", targetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return r, nil
+		return h.geminiPassthrough(r, ctx)
 	}
 
 	trans := h.translatorRegistry.FindTranslator("gemini", providerConfig.Type)
 	if trans == nil {
 		log.Printf("[Gemini] No translator for gemini->%s", providerConfig.Type)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return r, nil
+		return h.geminiPassthrough(r, ctx)
 	}
 
 	p, err := h.providerRegistry.GetProvider(targetProviderID)
 	if err != nil {
 		log.Printf("[Gemini] Provider not found: %s", targetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return r, nil
+		return h.geminiPassthrough(r, ctx)
 	}
 
 	providerReq, err := trans.TranslateRequest(bodyBytes, targetModel)
 	if err != nil {
 		log.Printf("[Gemini] Translation failed: %v", err)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return r, nil
+		return h.geminiPassthrough(r, ctx)
 	}
 
 	log.Printf("[Gemini] Translating %s -> %s (provider: %s)", modelName, targetModel, targetProviderID)
@@ -202,6 +209,18 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	reqCtx, reqCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer reqCancel()
 	return h.handleNonStreamRequest(r, reqCtx, p, providerReq, trans, modelName)
+}
+
+// geminiPassthrough forwards r upstream unchanged through the retry-hardened
+// passthrough helper: transient upstream failures (EOF, 5xx, truncated body)
+// are retried, and exhausted attempts surface a 502 instead of a silent nil.
+func (h *GeminiHandler) geminiPassthrough(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+	bodyBytes, err := readRequestBody(r)
+	if err != nil {
+		log.Printf("[Gemini] Failed to read passthrough body: %v", err)
+		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Failed to read request body")
+	}
+	return passthroughWithRetry("Gemini", r, bodyBytes, ctx, passthroughMaxRetries)
 }
 
 func isNonModelRpc(path string) bool {
