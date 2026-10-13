@@ -261,6 +261,8 @@ extension ModelRoutingConfig {
                 // MiniMax
                 "minimax-m3",
                 "minimax-m2.7",
+                // StepFun（Step）
+                "step-5-preview",
                 // Auto 自动路由（实测落到 deepseek-v4.1-flash）
                 "auto"
             ],
