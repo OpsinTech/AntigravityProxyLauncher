@@ -43,7 +43,10 @@ trap cleanup EXIT
 
 STAGING="$TMP_DIR/staging"
 RW_DMG="$TMP_DIR/rw.dmg"
-MNTPOINT="$TMP_DIR/mount"
+# 挂载点目录名必须是卷名：用 -mountpoint 指定路径挂载时，Finder 汇报的
+# 卷名取的是挂载点目录名，若与 VOL_NAME 不一致，下面的 AppleScript
+# `tell disk "$VOL_NAME"` 会以 -1728（不能获得该 disk）失败，版式写入被跳过。
+MNTPOINT="$TMP_DIR/$VOL_NAME"
 mkdir -p "$STAGING" "$MNTPOINT"
 
 # 1) 拷贝 .app
