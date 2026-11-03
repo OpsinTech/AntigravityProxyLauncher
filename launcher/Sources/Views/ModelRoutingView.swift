@@ -994,10 +994,16 @@ private struct SourceModel: Identifiable {
     var id: String { pattern }
 }
 
+/// 映射规则可选的「源模型」候选（App 内部发起的模型名称）。
+/// 与 `GeminiBuiltinModels`（2026-10-30 从 daily-cloudcode-pa fetchAvailableModels 抓取的清单）保持同步。
+/// 这里统一使用不带档位后缀的「家族名」作为匹配模式：底层 `FindMatchingRule` 走子串匹配，
+/// 因此 `claude-sonnet-5-5` 可覆盖 `claude-sonnet-5-5-high/low/medium` 全部档位。
 private let sourceModels: [SourceModel] = [
-    .init(pattern: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6"),
-    .init(pattern: "claude-opus-4-6", displayName: "Claude Opus 4.6"),
-    .init(pattern: "gpt-oss-120b", displayName: "GPT OSS 120B"),
+    .init(pattern: "gemini-4-argon", displayName: "Gemini 4 Argon"),
+    .init(pattern: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash"),
+    .init(pattern: "claude-opus-5-5", displayName: "Claude Opus 5.5"),
+    .init(pattern: "claude-sonnet-5-5", displayName: "Claude Sonnet 5.5"),
+    .init(pattern: "gpt-oss-120b", displayName: "GPT-OSS 120B"),
 ]
 
 private func sourceModelDisplayName(for pattern: String) -> String {
