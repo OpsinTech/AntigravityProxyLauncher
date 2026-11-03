@@ -29,7 +29,7 @@ func routerFixture() *RoutingConfig {
 				{
 					Keywords:         []string{"图片"},
 					TargetProviderID: GeminiBuiltinProviderID,
-					TargetModel:      "gemini-3.6-flash-high",
+					TargetModel:      "gemini-3.8-flash-high",
 					Enabled:          true,
 				},
 			},
@@ -66,8 +66,8 @@ func TestResolveLLMRouterTargetHonorsGeminiBuiltinForGemini(t *testing.T) {
 	// Gemini-format body: contents[].parts[].text.
 	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"帮我生成一张图片"}]}]}`)
 	providerID, model := cfg.ResolveLLMRouterTarget(rule, body, "gemini")
-	if providerID != GeminiBuiltinProviderID || model != "gemini-3.6-flash-high" {
-		t.Fatalf("gemini format: got (%s, %s), want (gemini_builtin, gemini-3.6-flash-high)", providerID, model)
+	if providerID != GeminiBuiltinProviderID || model != "gemini-3.8-flash-high" {
+		t.Fatalf("gemini format: got (%s, %s), want (gemini_builtin, gemini-3.8-flash-high)", providerID, model)
 	}
 }
 

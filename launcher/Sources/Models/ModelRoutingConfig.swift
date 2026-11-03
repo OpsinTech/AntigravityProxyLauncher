@@ -18,25 +18,32 @@ struct GeminiBuiltinModel: Identifiable, Hashable {
     }
 }
 
-/// 内置 Gemini 模型列表（2026-09-04 从 daily-cloudcode-pa.googleapis.com fetchAvailableModels 抓取的真实可用 ID，
-/// 其中包含 2026-09-02 新发布的 Gemini 3.8 Flash：gemini-3.8-flash-{high,low,medium,tiered}）
-/// 注意：后端要求带后缀的 ID（-high/-low/-medium/-tiered/-agent 等），裸 ID（如 gemini-3.8-flash）会返回 404。
+/// 内置 Gemini 模型列表（2026-10-30 从 daily-cloudcode-pa.googleapis.com fetchAvailableModels 抓取的真实可用 ID，
+/// 其中包含新发布的 Gemini 4 Argon：gemini-4-argon-{high,low,medium}，
+/// 以及 Google 后端同期开放的 Claude 5.5（Opus/Sonnet）与 GPT-OSS 120B）
+/// 注意：后端要求带后缀的 ID（-high/-low/-medium/-tiered/-agent 等），裸 ID（如 gemini-4-argon）会返回 404。
 /// 显示名直接取自 fetchAvailableModels 响应的 display name（个别为 "-" 的 tiered 模型按同族命名）。
+/// 已移除后端不再提供的 gemini-3.7-flash-* / gemini-3.6-flash-* / gemini-3.1-pro-*，
+/// 以及旧款 gemini-2.5-* / gemini-3-flash / gemini-3.1-flash-image/lite / gemini-3.5-flash-lite。
 let GeminiBuiltinModels: [GeminiBuiltinModel] = [
+    // Gemini 4 Argon（2026-10 新发布）
+    GeminiBuiltinModel("gemini-4-argon-high", "Gemini 4 Argon (High)"),
+    GeminiBuiltinModel("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
+    GeminiBuiltinModel("gemini-4-argon-medium", "Gemini 4 Argon (Medium)"),
+    // Gemini 3.8 Flash（2026-09-02 发布）
     GeminiBuiltinModel("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
     GeminiBuiltinModel("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
     GeminiBuiltinModel("gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"),
     GeminiBuiltinModel("gemini-3.8-flash-tiered", "Gemini 3.8 Flash (Tiered)"),
-    GeminiBuiltinModel("gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"),
-    GeminiBuiltinModel("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)"),
-    GeminiBuiltinModel("gemini-3.7-flash-medium", "Gemini 3.7 Flash (Medium)"),
-    GeminiBuiltinModel("gemini-3.7-flash-tiered", "Gemini 3.7 Flash (Tiered)"),
-    GeminiBuiltinModel("gemini-3.6-flash-high", "Gemini 3.6 Flash (High)"),
-    GeminiBuiltinModel("gemini-3.6-flash-low", "Gemini 3.6 Flash (Low)"),
-    GeminiBuiltinModel("gemini-3.6-flash-medium", "Gemini 3.6 Flash (Medium)"),
-    GeminiBuiltinModel("gemini-3.6-flash-tiered", "Gemini 3.6 Flash (Tiered)"),
-    GeminiBuiltinModel("gemini-3.1-pro-high", "Gemini 3.1 Pro (High)"),
-    GeminiBuiltinModel("gemini-3.1-pro-low", "Gemini 3.1 Pro (Low)"),
+    // Claude（Google 后端提供，走应用 Google 认证）
+    GeminiBuiltinModel("claude-opus-5-5-high", "Claude Opus 5.5 (High)"),
+    GeminiBuiltinModel("claude-opus-5-5-low", "Claude Opus 5.5 (Low)"),
+    GeminiBuiltinModel("claude-opus-5-5-medium", "Claude Opus 5.5 (Medium)"),
+    GeminiBuiltinModel("claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"),
+    GeminiBuiltinModel("claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)"),
+    GeminiBuiltinModel("claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Medium)"),
+    // GPT-OSS（Google 后端提供）
+    GeminiBuiltinModel("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
 ]
 
 struct ModelRoutingConfig: Codable, Equatable {
@@ -323,18 +330,21 @@ extension ModelRoutingConfig {
     ]
 
     /// Google ecosystem default routing rules.
+    /// 源模型与 `GeminiBuiltinModels` 的后端清单同步（2026-10-30）：
+    /// Google 后端已改由 Claude 5.5（Opus/Sonnet）与 GPT-OSS 120B 担当第三方模型，
+    /// 旧的 claude-sonnet-4-6 / claude-opus-4-6 已随清单更新一并替换。
     static let defaultGoogleRules: [RoutingRule] = [
         RoutingRule(
-            sourceModelPattern: "claude-sonnet-4-6",
-            sourceDisplayName: "Claude Sonnet 4.6",
+            sourceModelPattern: "claude-sonnet-5-5",
+            sourceDisplayName: "Claude Sonnet 5.5",
             sourceType: "google",
             targetProviderID: "deepseek",
             targetModel: "deepseek-v4-flash",
             enabled: true
         ),
         RoutingRule(
-            sourceModelPattern: "claude-opus-4-6",
-            sourceDisplayName: "Claude Opus 4.6",
+            sourceModelPattern: "claude-opus-5-5",
+            sourceDisplayName: "Claude Opus 5.5",
             sourceType: "google",
             targetProviderID: "deepseek",
             targetModel: "deepseek-v4-pro",
@@ -342,7 +352,7 @@ extension ModelRoutingConfig {
         ),
         RoutingRule(
             sourceModelPattern: "gpt-oss-120b",
-            sourceDisplayName: "GPT OSS 120B",
+            sourceDisplayName: "GPT-OSS 120B",
             sourceType: "google",
             targetProviderID: "deepseek",
             targetModel: "deepseek-v4-flash",

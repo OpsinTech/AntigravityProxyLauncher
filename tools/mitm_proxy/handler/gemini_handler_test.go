@@ -112,7 +112,7 @@ func TestGeminiHandler_GeminiBuiltinModelSubstitution(t *testing.T) {
 func TestEnsureThoughtSignatures(t *testing.T) {
 	// 1. Cloud Code wrapped format with a third-party functionCall (lacking signature)
 	wrappedInput := []byte(`{
-		"model": "gemini-3.7-flash-high",
+		"model": "gemini-3.8-flash-high",
 		"request": {
 			"contents": [
 				{
