@@ -122,13 +122,9 @@ for dylib in "$APP_BUNDLE/Contents/MacOS/"*.dylib; do
   verify_arch "$dylib"
 done
 
-echo "[6/6] Creating DMG and ZIP..."
-hdiutil create \
-  -volname "$APP_NAME" \
-  -srcfolder "$APP_BUNDLE" \
-  -ov \
-  -format UDZO \
-  "$OUTPUT_DIR/$DMG_NAME"
+echo "[6/6] Creating drag-to-install DMG and ZIP..."
+bash "$ROOT_DIR/scripts/create_dmg.sh" \
+  "$APP_BUNDLE" "$APP_NAME" "$OUTPUT_DIR/$DMG_NAME"
 
 ditto -c -k --keepParent "$APP_BUNDLE" "$OUTPUT_DIR/$ZIP_NAME"
 
