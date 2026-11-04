@@ -108,6 +108,12 @@ hdiutil create -volname "$VOL_NAME" \
 echo "[2/4] mount & style window..."
 hdiutil attach -nobrowse -noautoopen -mountpoint "$MNTPOINT" "$RW_DMG" >/dev/null
 
+# 向系统查询挂载后的真实卷名：连续两次挂载同名卷时，第二次会被系统改名成
+# "<卷名> 1"，此时拿原始名字去 tell disk 会以 -1728 失败（版式被静默跳过）。
+REAL_VOL_NAME="$(diskutil info "$MNTPOINT" 2>/dev/null | awk -F': *' '/Volume Name/{print $2; exit}')"
+[ -n "$REAL_VOL_NAME" ] || REAL_VOL_NAME="$VOL_NAME"
+echo "  volume: $REAL_VOL_NAME"
+
 set +e
 # 硬超时包裹：若 GUI/osascript 在超时内未完成（如无交互环境），
 # 直接跳过，但仍保留 Applications 别名，DMG 可正常使用（拖拽安装不受影响）。
@@ -122,7 +128,7 @@ fi
 
 $STYLE_PREFIX osascript <<EOF
 tell application "Finder"
-  tell disk "$VOL_NAME"
+  tell disk "$REAL_VOL_NAME"
     open
     set current view of container window to icon view
     set toolbar visible of container window to false
