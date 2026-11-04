@@ -837,6 +837,27 @@ struct ProviderCard: View {
                     .help("启动或测试时自动从接口获取最新模型列表")
                 }
 
+                HStack(spacing: 8) {
+                    Text(" ")
+                        .frame(width: 50, alignment: .leading)
+                    Toggle("提示词兼容模式", isOn: Binding(
+                        get: { provider.options["sanitize_system_prompt"] == "true" },
+                        set: { newValue in
+                            if newValue {
+                                provider.options["sanitize_system_prompt"] = "true"
+                            } else {
+                                provider.options.removeValue(forKey: "sanitize_system_prompt")
+                            }
+                            clearTestResult()
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .font(.system(size: 11))
+                    .disabled(!provider.enabled)
+                    .help("把 system 指令原样移到 user 消息，绕过上游对第三方客户端的指纹校验。CodeBuddy / WorkBuddy 遇到「Illegal API invocation from an unapproved channel」时打开；其他 provider 无需开启")
+                }
+
                 // Test connection + fetch models + inline result
                 HStack(spacing: 8) {
                     Text(" ")
