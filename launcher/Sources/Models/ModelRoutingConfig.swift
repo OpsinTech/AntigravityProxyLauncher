@@ -54,9 +54,16 @@ struct ModelRoutingConfig: Codable, Equatable {
 
     /// 确保内置服务商（DeepSeek / OfoxAI / CodeBuddy / TokenRouter）及三个本地模型服务（Ollama / vLLM / LM Studio）始终存在。
     /// 按 id 前缀去重：若用户已配置过，不再重复添加，因此不会覆盖用户在卡片里修改的 endpoint / 启用状态。
+    /// 对已存在的 provider，只把内置清单里新增的模型并入（只增不减，保留用户既有顺序），
+    /// 否则升级到带新模型清单的版本后，老配置里依然选不到新模型。
     mutating func ensureBuiltinLocalProviders() {
         for defaultP in Self.defaultProviders {
-            if !providers.contains(where: { $0.id == defaultP.id }) {
+            if let index = providers.firstIndex(where: { $0.id == defaultP.id }) {
+                let missing = defaultP.models.filter { !providers[index].models.contains($0) }
+                if !missing.isEmpty {
+                    providers[index].models.append(contentsOf: missing)
+                }
+            } else {
                 providers.append(defaultP)
             }
         }
