@@ -384,7 +384,7 @@ func (w *proxyWrapper) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 				}
 				rw.WriteHeader(resp.StatusCode)
 				if resp.Body != nil {
-					io.Copy(rw, resp.Body)
+					streamCopyWithFlush(rw, resp.Body)
 					resp.Body.Close()
 				}
 				return
@@ -403,6 +403,30 @@ func (w *proxyWrapper) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 
 	// Default: use goproxy for forward proxy (CONNECT) requests
 	w.goproxy.ServeHTTP(rw, r)
+}
+
+// streamCopyWithFlush 把上游响应体逐块转发给客户端，并在每块之后 Flush。
+//
+// 直接 io.Copy 会把 SSE 事件堆在 net/http 的 4KB 缓冲里，直到攒满或 handler
+// 返回才发出去：客户端于是收不到增量输出，表现为"卡一会儿再整段吐出来"，
+// 短回答甚至会在结束瞬间一次到达。流式接口必须显式 Flush。
+func streamCopyWithFlush(rw http.ResponseWriter, body io.Reader) {
+	flusher, canFlush := rw.(http.Flusher)
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			if _, writeErr := rw.Write(buf[:n]); writeErr != nil {
+				return
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			return
+		}
+	}
 }
 
 func (w *proxyWrapper) handleModelsList(rw http.ResponseWriter, r *http.Request) {
