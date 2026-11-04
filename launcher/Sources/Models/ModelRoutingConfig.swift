@@ -253,25 +253,34 @@ extension ModelRoutingConfig {
                 "deepseek-v4-flash",
                 "deepseek-v3.2",
                 "deepseek-v3",
-                "deepseek-r1",
-                // 智谱 GLM
+                // 智谱 GLM（glm-5.1 只支持 reasoning effort = medium，传 high 会 400）
                 "glm-5.3",
                 "glm-5.2",
                 "glm-5.1",
                 "glm-5.0",
                 "glm-5v-turbo",
-                // 月之暗面 Kimi
-                "kimi-k3",
+                // 月之暗面 Kimi（Kimi-K3 的官方 id 是 kimi-k3-2；kimi-k3 作为别名同样可用）
+                "kimi-k3-2",
                 "kimi-k2.7",
                 "kimi-k2.6",
                 "kimi-k2.5",
-                // MiniMax
-                "minimax-m3",
+                // MiniMax（MiniMax-M3 的官方 id 是 minimax-m3-pay；minimax-m3 别名同样可用）
+                "minimax-m3-pay",
                 "minimax-m2.7",
                 // StepFun（Step）
                 "step-5-preview",
                 // Auto 自动路由（实测落到 deepseek-v4.1-flash）
-                "auto"
+                "auto",
+                // 2026-11 WorkBuddy 模型选择器新增项；以下 ID 均已用真实请求验证（HTTP 200）。
+                // 注意 Kimi-K3.1-Pro-Hig… 的完整 id 是 -highspeed 而非 -high。
+                "glm-5.3-flash",
+                "glm-5.3-flashx",
+                "kimi-k3.1-pro",
+                "kimi-k3.1-pro-highspeed",
+                "kimi-k2.8-preview",
+                "minimax-m3.1-flash",
+                "mimo-v2.6-pro",
+                "space-bunny"
             ],
             options: [
                 "api_path": "/v2/chat/completions"
