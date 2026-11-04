@@ -127,7 +127,7 @@ func NewOpenAIProvider(config ProviderConfig) (Provider, error) {
 
 	p := &OpenAIProvider{
 		config:       config,
-		httpClient:   &http.Client{},
+		httpClient:   newProviderHTTPClient(config),
 		apiPath:      apiPath,
 		authHeader:   authHeader,
 		authPrefix:   authPrefix,

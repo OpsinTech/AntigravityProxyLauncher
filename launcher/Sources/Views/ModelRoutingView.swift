@@ -858,6 +858,27 @@ struct ProviderCard: View {
                     .help("把 system 指令原样移到 user 消息，绕过上游对第三方客户端的指纹校验。CodeBuddy / WorkBuddy 遇到「Illegal API invocation from an unapproved channel」时打开；其他 provider 无需开启")
                 }
 
+                HStack(spacing: 8) {
+                    Text(" ")
+                        .frame(width: 50, alignment: .leading)
+                    Toggle("直连（不走本地代理）", isOn: Binding(
+                        get: { provider.options["direct_connection"] == "true" },
+                        set: { newValue in
+                            if newValue {
+                                provider.options["direct_connection"] = "true"
+                            } else {
+                                provider.options.removeValue(forKey: "direct_connection")
+                            }
+                            clearTestResult()
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .font(.system(size: 11))
+                    .disabled(!provider.enabled)
+                    .help("跳过本地 SOCKS 代理直接拨号，国内 API（如 Copilot / CodeBuddy）可省约 1 秒首字延迟；需要翻墙的 provider（OpenRouter 等）请勿开启")
+                }
+
                 // Test connection + fetch models + inline result
                 HStack(spacing: 8) {
                     Text(" ")
