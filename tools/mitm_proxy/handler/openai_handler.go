@@ -156,6 +156,7 @@ func (h *OpenAIHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
+	MarkExternalAPI(providerReq, r)
 
 	log.Printf("[OpenAI] Translating %s -> %s (provider: %s)", modelDetect.Model, targetModel, targetProviderID)
 
