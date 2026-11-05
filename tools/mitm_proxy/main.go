@@ -376,6 +376,7 @@ func (w *proxyWrapper) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		h := w.handlerRegistry.FindHandler(r)
 		if h != nil {
 			log.Printf("[ReverseProxy] Direct API call: %s %s -> %s", r.Method, r.URL.Path, h.Name())
+			r.Header.Set(handler.ExternalAPIHeader, "1")
 			ctx := &goproxy.ProxyCtx{Req: r}
 			_, resp := h.Handle(r, ctx)
 			if resp != nil {
