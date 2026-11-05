@@ -91,10 +91,14 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 
 	// Always attempt to read body and extract model — don't restrict by path.
 	// Cloud Code may use non-standard paths for content generation.
+	handleStart := time.Now()
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 	if err != nil {
 		log.Printf("[Gemini] Failed to read body, passing through: %v", err)
 		return r, nil
+	}
+	if len(bodyBytes) > 256<<10 {
+		log.Printf("[Gemini] timing: body %d bytes read in %v", len(bodyBytes), time.Since(handleStart))
 	}
 
 	modelName := h.extractModelFromBody(bodyBytes)
@@ -426,6 +430,7 @@ func (h *GeminiHandler) handleStreamRequest(
 	t translator.Translator,
 	sourceModel string,
 ) (*http.Request, *http.Response) {
+	streamStart := time.Now()
 	chunks, err := p.SendStreamRequest(ctx, req)
 	if err != nil {
 		cancel()
@@ -433,12 +438,20 @@ func (h *GeminiHandler) handleStreamRequest(
 		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream provider error")
 	}
 
+	upstreamDur := time.Since(streamStart)
 	pr, pw := io.Pipe()
 	state := translator.NewStreamState()
 
 	go func() {
 		defer pw.Close()
 		defer cancel()
+		var firstDur time.Duration
+		defer func() {
+			total := time.Since(streamStart)
+			if total > 2*time.Second {
+				log.Printf("[Gemini] timing: upstream=%v first=%v total=%v", upstreamDur, firstDur, total)
+			}
+		}()
 
 		writePipe := func(data []byte) bool {
 			_, err := pw.Write(data)
@@ -456,6 +469,10 @@ func (h *GeminiHandler) handleStreamRequest(
 				if chunk.Error != nil {
 					log.Printf("[Gemini] Stream error: %v", chunk.Error)
 					return
+				}
+
+				if firstDur == 0 && (chunk.Delta != "" || len(chunk.ToolCalls) > 0) {
+					firstDur = time.Since(streamStart)
 				}
 
 				if chunk.Usage != nil {
