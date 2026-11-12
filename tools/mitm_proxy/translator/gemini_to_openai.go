@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/provider"
@@ -414,11 +415,62 @@ func normalizeToolSchema(schema map[string]interface{}) map[string]interface{} {
 			} else {
 				result[k] = v
 			}
+		} else if _, ok := integerSchemaKeywords[k]; ok {
+			result[k] = coerceIntegerConstraint(v)
+		} else if _, ok := numberSchemaKeywords[k]; ok {
+			result[k] = coerceNumberConstraint(v)
 		} else {
 			result[k] = v
 		}
 	}
 	return result
+}
+
+// integerSchemaKeywords are JSON-Schema keywords whose value must be an
+// integer. Gemini's proto3 JSON encoding emits several of them as strings
+// ("minLength": "1"), which strict OpenAI-compatible backends reject before the
+// model ever runs:
+//
+//	Tool 3 function has invalid 'parameters' schema: '1' is not of type 'integer'
+//	... On schema['properties']['Recipient']['minLength']: '1'
+var integerSchemaKeywords = map[string]struct{}{
+	"minLength": {}, "maxLength": {},
+	"minItems": {}, "maxItems": {},
+	"minProperties": {}, "maxProperties": {},
+}
+
+// numberSchemaKeywords are the same problem with non-integral values.
+var numberSchemaKeywords = map[string]struct{}{
+	"minimum": {}, "maximum": {},
+	"exclusiveMinimum": {}, "exclusiveMaximum": {},
+	"multipleOf": {},
+}
+
+// coerceIntegerConstraint turns a string-encoded integer keyword into an int,
+// leaving already-numeric or unparseable values untouched.
+func coerceIntegerConstraint(v interface{}) interface{} {
+	s, ok := v.(string)
+	if !ok {
+		return v
+	}
+	i, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return v
+	}
+	return i
+}
+
+// coerceNumberConstraint turns a string-encoded numeric keyword into a float64.
+func coerceNumberConstraint(v interface{}) interface{} {
+	s, ok := v.(string)
+	if !ok {
+		return v
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return v
+	}
+	return f
 }
 
 // RegisterGeminiToOpenAI registers the translator with the registry

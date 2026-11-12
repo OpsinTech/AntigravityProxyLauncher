@@ -3,7 +3,9 @@ package handler
 import (
 	"bytes"
 	"io"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,7 +57,7 @@ func TestGeminiHandler_FastBypassNonPost(t *testing.T) {
 	}
 }
 
-func TestGeminiHandler_FastBypassInternalRpc(t *testing.T) {
+func TestGeminiHandler_InternalRpcPassthrough(t *testing.T) {
 	routingCfg := &config.RoutingConfig{}
 	provReg := provider.NewRegistry()
 	transReg := translator.NewRegistry()
@@ -63,14 +65,30 @@ func TestGeminiHandler_FastBypassInternalRpc(t *testing.T) {
 
 	body := []byte(`{"userId": "12345"}`)
 	req := httptest.NewRequest("POST", "https://cloudcode-pa.googleapis.com/v1/fetchUserInfo", bytes.NewReader(body))
-	ctx := &goproxy.ProxyCtx{}
+
+	// Internal RPCs are forwarded upstream through the retry-hardened
+	// passthrough instead of being model-translated, so a transient upstream
+	// disconnect doesn't surface as a dead login page.
+	upstreamCalls := 0
+	ctx := &goproxy.ProxyCtx{RoundTripper: goproxy.RoundTripperFunc(func(r *http.Request, c *goproxy.ProxyCtx) (*http.Response, error) {
+		upstreamCalls++
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    r,
+		}, nil
+	})}
 
 	outReq, outResp := h.Handle(req, ctx)
-	if outResp != nil {
-		t.Errorf("Expected nil response for fast-bypassed internal RPC, got %+v", outResp)
+	if outResp == nil {
+		t.Fatalf("expected internal RPC to be passed through upstream, got nil response (outReq=%v)", outReq)
 	}
-	if outReq != req {
-		t.Errorf("Expected unchanged request pointer")
+	if outResp.StatusCode != 200 {
+		t.Errorf("passed-through status = %d, want 200", outResp.StatusCode)
+	}
+	if upstreamCalls != 1 {
+		t.Errorf("upstream attempts = %d, want 1", upstreamCalls)
 	}
 }
 
@@ -91,21 +109,31 @@ func TestGeminiHandler_GeminiBuiltinModelSubstitution(t *testing.T) {
 
 	rawBody := []byte(`{"model":"gemini-2.0-flash","request":{"contents":[{"parts":[{"text":"hello"}]}]}}`)
 	req := httptest.NewRequest("POST", "https://cloudcode-pa.googleapis.com/v1/streamGenerateContent", bytes.NewReader(rawBody))
-	ctx := &goproxy.ProxyCtx{}
 
-	outReq, outResp := h.Handle(req, ctx)
-	// gemini_builtin should return outResp == nil so goproxy transparently streams to upstream
-	if outResp != nil {
-		t.Errorf("Expected nil response for gemini_builtin streaming passthrough, got %+v", outResp)
+	// gemini_builtin keeps Google auth and only substitutes the model, then
+	// forwards the live stream upstream — so capture what the upstream saw.
+	var upstreamBody []byte
+	ctx := &goproxy.ProxyCtx{RoundTripper: goproxy.RoundTripperFunc(func(r *http.Request, c *goproxy.ProxyCtx) (*http.Response, error) {
+		upstreamBody, _ = io.ReadAll(r.Body)
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: {}\n\n")),
+			Request:    r,
+		}, nil
+	})}
+
+	_, outResp := h.Handle(req, ctx)
+	if outResp == nil {
+		t.Fatal("Expected the gemini_builtin stream to be forwarded upstream, got nil response")
+	}
+	if outResp.StatusCode != 200 {
+		t.Errorf("Expected passed-through stream, got status %d", outResp.StatusCode)
 	}
 
 	// Verify the request body was modified to the new model
-	bodyBytes, err := io.ReadAll(outReq.Body)
-	if err != nil {
-		t.Fatalf("Failed to read modified body: %v", err)
-	}
-	if !bytes.Contains(bodyBytes, []byte("gemini-2.5-flash-preview")) {
-		t.Errorf("Modified body did not contain target model: %s", string(bodyBytes))
+	if !bytes.Contains(upstreamBody, []byte("gemini-2.5-flash-preview")) {
+		t.Errorf("Modified body did not contain target model: %s", string(upstreamBody))
 	}
 }
 
