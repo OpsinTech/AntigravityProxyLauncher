@@ -199,6 +199,7 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return h.geminiPassthrough(r, ctx)
 	}
+	MarkExternalAPI(providerReq, r)
 
 	log.Printf("[Gemini] Translating %s -> %s (provider: %s)", modelName, targetModel, targetProviderID)
 

@@ -133,6 +133,7 @@ func (h *AnthropicHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		return r, nil
 	}
+	MarkExternalAPI(providerReq, r)
 
 	log.Printf("[Anthropic] Translating %s -> %s (provider: %s)", modelDetect.Model, targetModel, targetProviderID)
 
