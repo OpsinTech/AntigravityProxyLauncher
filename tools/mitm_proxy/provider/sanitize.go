@@ -1,12 +1,43 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
 )
 
 // neutralSystemPrompt 用来替换被上游判定为"第三方客户端"的 system 提示词。
 const neutralSystemPrompt = "You are a helpful coding assistant."
+
+// blockedFingerprints 是上游会拦的第三方客户端提示词特征（小写）。
+// 只有命中这些特征才需要搬迁 system，避免无谓地改写普通请求。
+var blockedFingerprints = [][]byte{
+	[]byte("deepseek harness"),
+	[]byte("claude code"),
+}
+
+// containsBlockedFingerprint 做大小写不敏感的匹配。
+// 按 1MB 窗口 + 32 字节重叠扫描，避免为大请求体一次性分配整份小写副本。
+func containsBlockedFingerprint(body []byte) bool {
+	const window = 1 << 20
+	const overlap = 32
+	for start := 0; start < len(body); start += window {
+		end := start + window + overlap
+		if end > len(body) {
+			end = len(body)
+		}
+		lower := bytes.ToLower(body[start:end])
+		for _, fp := range blockedFingerprints {
+			if bytes.Contains(lower, fp) {
+				return true
+			}
+		}
+		if end == len(body) {
+			break
+		}
+	}
+	return false
+}
 
 // sanitizeSystemPrompt 把 system 消息的内容原样搬到紧随其后的 user 消息里，
 // system 本身换成一句中性文案。
@@ -26,6 +57,10 @@ const neutralSystemPrompt = "You are a helpful coding assistant."
 //   - JSON 解析失败
 func sanitizeSystemPrompt(rawBody []byte, cfg ProviderConfig) []byte {
 	if cfg.Options["sanitize_system_prompt"] != "true" {
+		return rawBody
+	}
+	// 没命中已知特征就不动，保持请求原样（也避免大请求体的解析开销）
+	if !containsBlockedFingerprint(rawBody) {
 		return rawBody
 	}
 

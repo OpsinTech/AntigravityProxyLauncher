@@ -3,10 +3,14 @@ package handler
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -21,6 +25,31 @@ const passthroughMaxRetries = 2
 // passthroughRetryBaseDelay is multiplied by the retry number (1s, 2s, ...)
 // for backoff, matching the OpenAI provider retry policy.
 const passthroughRetryBaseDelay = time.Second
+
+// passthroughRetryBudget is the wall-clock ceiling for one request across all
+// attempts, backoff included. A dead egress path (blackholed node: SOCKS5
+// handshake succeeds, TLS ClientHello is swallowed) used to burn one full
+// transport timeout per attempt, tripling the wait before the client saw a 502.
+const passthroughRetryBudget = 20 * time.Second
+
+// isRetryablePassthroughError reports whether another attempt can plausibly
+// succeed. Timeouts and client cancellations are one-shot: the path or the
+// caller is gone, and retrying only multiplies the latency the user sees.
+func isRetryablePassthroughError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, os.ErrDeadlineExceeded) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return false
+	}
+	return true
+}
 
 // readRequestBody consumes and returns the client request body, capped at
 // maxRequestBodySize, so every upstream attempt can replay it. Returns nil
@@ -51,10 +80,16 @@ func readRequestBody(r *http.Request) ([]byte, error) {
 func roundTripWithRetry(tag string, r *http.Request, bodyBytes []byte, ctx *goproxy.ProxyCtx, maxRetries int) (*http.Response, error) {
 	isStream := strings.Contains(r.URL.Path, "streamGenerateContent")
 
+	start := time.Now()
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			delay := passthroughRetryBaseDelay * time.Duration(attempt)
+			if spent := time.Since(start); spent+delay >= passthroughRetryBudget {
+				log.Printf("[%s] Passthrough %s: abandoning retries after %d attempt(s) (%v of %v budget used, last: %v)",
+					tag, r.URL.Path, attempt, spent.Round(time.Millisecond), passthroughRetryBudget, lastErr)
+				break
+			}
 			log.Printf("[%s] Passthrough %s: transient upstream failure, retry %d/%d in %v (last: %v)",
 				tag, r.URL.Path, attempt, maxRetries, delay, lastErr)
 			time.Sleep(delay)
@@ -72,6 +107,13 @@ func roundTripWithRetry(tag string, r *http.Request, bodyBytes []byte, ctx *gopr
 		resp, err := ctx.RoundTrip(r)
 		if err != nil {
 			lastErr = fmt.Errorf("roundtrip failed: %w", err)
+			if !isRetryablePassthroughError(err) {
+				// Timeout or cancellation: another attempt cannot help and would
+				// only stack more waiting on top of the client's.
+				log.Printf("[%s] Passthrough %s: not retrying after %v (dead path or canceled request)",
+					tag, r.URL.Path, lastErr)
+				break
+			}
 			continue
 		}
 		if resp == nil || resp.Body == nil {

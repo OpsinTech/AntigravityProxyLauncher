@@ -20,7 +20,6 @@ import (
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/translator"
 	"github.com/elazarl/goproxy"
 	"github.com/joho/godotenv"
-	socks5proxy "golang.org/x/net/proxy"
 )
 
 // defaultMitmHosts lists domains that should be MITM-intercepted for model routing.
@@ -167,23 +166,16 @@ func main() {
 		socks5Addr = "127.0.0.1:7897"
 	}
 
-	socks5Dialer, err := socks5proxy.SOCKS5("tcp", socks5Addr, nil, socks5proxy.Direct)
+	socks5Transport, err := newSocks5Transport(socks5Addr)
 	if err != nil {
 		log.Printf("[Warning] Failed to create SOCKS5 dialer: %v, using direct connection", err)
 	} else {
-		socks5Transport := &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return socks5Dialer.Dial(network, addr)
-			},
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-		}
 		// Set as default for shared HTTP client
 		http.DefaultTransport = socks5Transport
 		// Set for goproxy transport
 		proxy.Tr = socks5Transport
-		log.Printf("[MITM] Outbound connections routed through SOCKS5: %s", socks5Addr)
+		log.Printf("[MITM] Outbound connections routed through SOCKS5: %s (dial=%v tls=%v header=%v)",
+			socks5Addr, socks5DialTimeout, upstreamTLSHandshakeTimeout, upstreamResponseHeaderTimeout)
 	}
 
 	// Export goproxy CA certificate to absolute paths
@@ -285,16 +277,8 @@ func runPassthroughOnly() {
 	if socks5Addr == "" {
 		socks5Addr = "127.0.0.1:7897"
 	}
-	socks5Dialer, err := socks5proxy.SOCKS5("tcp", socks5Addr, nil, socks5proxy.Direct)
+	socks5Transport, err := newSocks5Transport(socks5Addr)
 	if err == nil {
-		socks5Transport := &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return socks5Dialer.Dial(network, addr)
-			},
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-		}
 		http.DefaultTransport = socks5Transport
 		proxy.Tr = socks5Transport
 	}
@@ -376,6 +360,7 @@ func (w *proxyWrapper) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		h := w.handlerRegistry.FindHandler(r)
 		if h != nil {
 			log.Printf("[ReverseProxy] Direct API call: %s %s -> %s", r.Method, r.URL.Path, h.Name())
+			r.Header.Set(handler.ExternalAPIHeader, "1")
 			ctx := &goproxy.ProxyCtx{Req: r}
 			_, resp := h.Handle(r, ctx)
 			if resp != nil {

@@ -165,3 +165,86 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// Gemini's proto3 JSON encoding sends numeric JSON-Schema keywords as strings
+// ("minLength": "1"). Strict OpenAI-compatible backends reject that outright, so
+// the translator has to emit real integers.
+func TestNormalizeToolSchema_CoercesStringNumericKeywords(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "OBJECT",
+		"properties": map[string]interface{}{
+			"Recipient": map[string]interface{}{
+				"type":      "STRING",
+				"minLength": "1",
+				"maxLength": "64",
+			},
+			"tags": map[string]interface{}{
+				"type":     "ARRAY",
+				"minItems": "0",
+				"maxItems": "10",
+				"items": map[string]interface{}{
+					"type":      "STRING",
+					"minLength": "2",
+				},
+			},
+			"score": map[string]interface{}{
+				"type":    "NUMBER",
+				"minimum": "0",
+				"maximum": "100",
+			},
+		},
+	}
+
+	got := normalizeToolSchema(schema)
+
+	recipient := got["properties"].(map[string]interface{})["Recipient"].(map[string]interface{})
+	if recipient["minLength"] != 1 {
+		t.Errorf("Recipient.minLength = %#v, want int 1", recipient["minLength"])
+	}
+	if recipient["maxLength"] != 64 {
+		t.Errorf("Recipient.maxLength = %#v, want int 64", recipient["maxLength"])
+	}
+	if recipient["type"] != "string" {
+		t.Errorf("Recipient.type = %#v, want \"string\"", recipient["type"])
+	}
+
+	tags := got["properties"].(map[string]interface{})["tags"].(map[string]interface{})
+	if tags["minItems"] != 0 {
+		t.Errorf("tags.minItems = %#v, want int 0", tags["minItems"])
+	}
+	item := tags["items"].(map[string]interface{})
+	if item["minLength"] != 2 {
+		t.Errorf("tags.items.minLength = %#v, want int 2 (nested schemas must be coerced too)", item["minLength"])
+	}
+
+	score := got["properties"].(map[string]interface{})["score"].(map[string]interface{})
+	if score["minimum"] != float64(0) {
+		t.Errorf("score.minimum = %#v, want float64 0", score["minimum"])
+	}
+	if score["maximum"] != float64(100) {
+		t.Errorf("score.maximum = %#v, want float64 100", score["maximum"])
+	}
+}
+
+// Already-numeric or non-numeric values must survive untouched.
+func TestNormalizeToolSchema_LeavesOtherValuesAlone(t *testing.T) {
+	schema := map[string]interface{}{
+		"type":      "OBJECT",
+		"minLength": 3,
+		"properties": map[string]interface{}{
+			"name": map[string]interface{}{
+				"type":    "STRING",
+				"pattern": "1",
+			},
+		},
+	}
+
+	got := normalizeToolSchema(schema)
+	if got["minLength"] != 3 {
+		t.Errorf("numeric minLength changed: %#v", got["minLength"])
+	}
+	name := got["properties"].(map[string]interface{})["name"].(map[string]interface{})
+	if name["pattern"] != "1" {
+		t.Errorf("pattern string changed: %#v", name["pattern"])
+	}
+}

@@ -88,6 +88,9 @@ type ProviderRequest struct {
 	// preserves all original fields (temperature, max_tokens, top_p, etc.)
 	// and content format (string vs array).
 	RawBody []byte `json:"-"`
+	// ExternalAPI 表示该请求来自对外接口（18081 反向代理），而非 MITM 拦截的
+	// 本机客户端流量。仅用于决定是否做 system 提示词迁移。
+	ExternalAPI bool `json:"-"`
 }
 
 // ProviderResponse is the normalized response from a provider.
