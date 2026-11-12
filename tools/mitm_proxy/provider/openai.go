@@ -296,6 +296,7 @@ func (p *OpenAIProvider) SendRequest(ctx context.Context, req *ProviderRequest) 
 	if req.ExternalAPI {
 		reqBytes = sanitizeSystemPrompt(reqBytes, p.config)
 	}
+	reqBytes, gzipped := maybeGzipBody(reqBytes, p.config)
 
 	url := fmt.Sprintf("%s://%s%s", p.scheme, p.config.ApiEndpoint, p.apiPath)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqBytes))
@@ -304,6 +305,9 @@ func (p *OpenAIProvider) SendRequest(ctx context.Context, req *ProviderRequest) 
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	if gzipped {
+		httpReq.Header.Set("Content-Encoding", "gzip")
+	}
 	if p.config.ApiKey != "" {
 		httpReq.Header.Set(p.authHeader, p.authPrefix+p.config.ApiKey)
 	}
@@ -376,6 +380,7 @@ func (p *OpenAIProvider) SendStreamRequest(ctx context.Context, req *ProviderReq
 	if req.ExternalAPI {
 		reqBytes = sanitizeSystemPrompt(reqBytes, p.config)
 	}
+	reqBytes, gzipped := maybeGzipBody(reqBytes, p.config)
 
 	log.Printf("[OpenAI:%s] Request: model=%s, stream=%v, tools=%d, messages=%d",
 		p.config.ID, req.Model, req.Stream, len(req.Tools), len(req.Messages))
@@ -395,6 +400,9 @@ func (p *OpenAIProvider) SendStreamRequest(ctx context.Context, req *ProviderReq
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
+	if gzipped {
+		httpReq.Header.Set("Content-Encoding", "gzip")
+	}
 	if p.config.ApiKey != "" {
 		httpReq.Header.Set(p.authHeader, p.authPrefix+p.config.ApiKey)
 	}

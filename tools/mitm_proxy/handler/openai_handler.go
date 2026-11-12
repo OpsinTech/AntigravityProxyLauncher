@@ -69,12 +69,17 @@ func (h *OpenAIHandler) Match(req *http.Request) bool {
 }
 
 func (h *OpenAIHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+	start := time.Now()
 	log.Printf("[OpenAI] Intercepted: %s %s", r.URL.Host, r.URL.Path)
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
 	if err != nil {
 		log.Printf("[OpenAI] Failed to read body: %v", err)
 		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadRequest, "Failed to read body")
+	}
+
+	if len(bodyBytes) > 256<<10 {
+		log.Printf("[OpenAI] timing: body %d bytes read in %v", len(bodyBytes), time.Since(start))
 	}
 
 	// Extract model from OpenAI-format body
@@ -210,6 +215,7 @@ func (h *OpenAIHandler) handleStreamRequest(
 	t translator.Translator,
 	sourceModel string,
 ) (*http.Request, *http.Response) {
+	streamStart := time.Now()
 	chunks, err := p.SendStreamRequest(ctx, req)
 	if err != nil {
 		cancel()
@@ -217,12 +223,20 @@ func (h *OpenAIHandler) handleStreamRequest(
 		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream provider error")
 	}
 
+	upstreamDur := time.Since(streamStart)
 	pr, pw := io.Pipe()
 	state := translator.NewStreamState()
 
 	go func() {
 		defer pw.Close()
 		defer cancel()
+		var firstDur time.Duration
+		defer func() {
+			total := time.Since(streamStart)
+			if total > 2*time.Second {
+				log.Printf("[OpenAI] timing: upstream=%v first=%v total=%v", upstreamDur, firstDur, total)
+			}
+		}()
 
 		writePipe := func(data []byte) bool {
 			_, err := pw.Write(data)
@@ -251,6 +265,9 @@ func (h *OpenAIHandler) handleStreamRequest(
 				if err != nil {
 					log.Printf("[OpenAI] Chunk translation failed: %v", err)
 					continue
+				}
+				if firstDur == 0 && (chunk.Delta != "" || len(chunk.ToolCalls) > 0) {
+					firstDur = time.Since(streamStart)
 				}
 				if events != nil && !writePipe(events) {
 					return // client disconnected
