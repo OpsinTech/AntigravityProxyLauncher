@@ -3,7 +3,10 @@ package config
 import (
 	"encoding/json"
 	"log"
+	"net"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/provider"
@@ -328,16 +331,123 @@ func LoadModelRouting() *ModelRouting {
 	return routing
 }
 
+// UpstreamProxy is the egress proxy every upstream request is dialed through.
+// The gateway used to assume SOCKS5 unconditionally, so a config with
+// "type": "http" looked valid in the UI but failed at dial time.
+type UpstreamProxy struct {
+	Type string
+	Host string
+	Port int
+}
+
+// Address returns host:port suitable for a dialer.
+func (p UpstreamProxy) Address() string {
+	return net.JoinHostPort(p.Host, strconv.Itoa(p.Port))
+}
+
+func defaultUpstreamProxy() UpstreamProxy {
+	return UpstreamProxy{Type: "socks5", Host: "127.0.0.1", Port: 7897}
+}
+
+// proxyConfigPath resolves proxy_config.json the same way for every reader.
+func proxyConfigPath() string {
+	if configPath := os.Getenv("PROXY_CONFIG"); configPath != "" {
+		return configPath
+	}
+	if configPath := os.Getenv("ANTIGRAVITY_CONFIG"); configPath != "" {
+		return configPath
+	}
+	home, _ := os.UserHomeDir()
+	return home + "/.config/antigravity/proxy_config.json"
+}
+
+// LoadUpstreamProxy resolves the egress endpoint. Priority:
+//  1. UPSTREAM_PROXY="type://host:port" (set by the launcher)
+//  2. SOCKS5_PROXY="host:port" (legacy launcher env, SOCKS5 implied)
+//  3. proxy_config.json proxy.{type,host,port}
+//  4. built-in default (socks5 127.0.0.1:7897)
+func LoadUpstreamProxy() UpstreamProxy {
+	if raw := strings.TrimSpace(os.Getenv("UPSTREAM_PROXY")); raw != "" {
+		if p, ok := parseUpstreamProxy(raw); ok {
+			return p
+		}
+		log.Printf("[Config] Ignoring invalid UPSTREAM_PROXY=%q", raw)
+	}
+	if raw := strings.TrimSpace(os.Getenv("SOCKS5_PROXY")); raw != "" {
+		if p, ok := parseUpstreamProxy(raw); ok {
+			p.Type = "socks5"
+			return p
+		}
+	}
+
+	data, err := os.ReadFile(proxyConfigPath())
+	if err != nil {
+		return defaultUpstreamProxy()
+	}
+
+	var cfg struct {
+		Proxy struct {
+			Type string `json:"type"`
+			Host string `json:"host"`
+			Port int    `json:"port"`
+		} `json:"proxy"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return defaultUpstreamProxy()
+	}
+
+	resolved := defaultUpstreamProxy()
+	if host := strings.TrimSpace(cfg.Proxy.Host); host != "" {
+		resolved.Host = host
+	}
+	if cfg.Proxy.Port >= 1 && cfg.Proxy.Port <= 65535 {
+		resolved.Port = cfg.Proxy.Port
+	}
+	if typ := normalizeProxyType(cfg.Proxy.Type); typ != "" {
+		resolved.Type = typ
+	}
+	return resolved
+}
+
+// normalizeProxyType maps config/env spellings onto the two transports the
+// gateway actually implements: SOCKS5 and HTTP(S).
+func normalizeProxyType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "socks", "socks5", "socks5h":
+		return "socks5"
+	case "http":
+		return "http"
+	case "https":
+		return "https"
+	default:
+		return ""
+	}
+}
+
+// parseUpstreamProxy accepts "type://host:port" or a bare "host:port"
+// (interpreted as SOCKS5).
+func parseUpstreamProxy(raw string) (UpstreamProxy, bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.Contains(raw, "://") {
+		raw = "socks5://" + raw
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return UpstreamProxy{}, false
+	}
+	proxyType := normalizeProxyType(u.Scheme)
+	host := u.Hostname()
+	port, portErr := strconv.Atoi(u.Port())
+	if proxyType == "" || host == "" || portErr != nil || port < 1 || port > 65535 {
+		return UpstreamProxy{}, false
+	}
+	return UpstreamProxy{Type: proxyType, Host: host, Port: port}, true
+}
+
 // IsModelRoutingEnabled checks proxy_config.json for mitm.model_routing_enabled.
 func IsModelRoutingEnabled() bool {
-	configPath := os.Getenv("PROXY_CONFIG")
-	if configPath == "" {
-		configPath = os.Getenv("ANTIGRAVITY_CONFIG")
-	}
-	if configPath == "" {
-		home, _ := os.UserHomeDir()
-		configPath = home + "/.config/antigravity/proxy_config.json"
-	}
+	configPath := proxyConfigPath()
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -363,14 +473,7 @@ func IsModelRoutingEnabled() bool {
 // LoadMitmHosts loads custom MITM host list from proxy_config.json (mitm.hosts field).
 // Returns nil if not configured — caller should use defaults.
 func LoadMitmHosts() []string {
-	configPath := os.Getenv("PROXY_CONFIG")
-	if configPath == "" {
-		configPath = os.Getenv("ANTIGRAVITY_CONFIG")
-	}
-	if configPath == "" {
-		home, _ := os.UserHomeDir()
-		configPath = home + "/.config/antigravity/proxy_config.json"
-	}
+	configPath := proxyConfigPath()
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
