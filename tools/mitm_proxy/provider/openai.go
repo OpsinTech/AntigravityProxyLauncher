@@ -296,6 +296,7 @@ func (p *OpenAIProvider) SendRequest(ctx context.Context, req *ProviderRequest) 
 	if req.ExternalAPI {
 		reqBytes = sanitizeSystemPrompt(reqBytes, p.config)
 	}
+	logBodyBreakdown(p.config.ID, reqBytes)
 	reqBytes, gzipped := maybeGzipBody(reqBytes, p.config)
 
 	url := fmt.Sprintf("%s://%s%s", p.scheme, p.config.ApiEndpoint, p.apiPath)
@@ -380,6 +381,7 @@ func (p *OpenAIProvider) SendStreamRequest(ctx context.Context, req *ProviderReq
 	if req.ExternalAPI {
 		reqBytes = sanitizeSystemPrompt(reqBytes, p.config)
 	}
+	logBodyBreakdown(p.config.ID, reqBytes)
 	reqBytes, gzipped := maybeGzipBody(reqBytes, p.config)
 
 	log.Printf("[OpenAI:%s] Request: model=%s, stream=%v, tools=%d, messages=%d",

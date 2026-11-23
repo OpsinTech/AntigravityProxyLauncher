@@ -92,10 +92,10 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	// Always attempt to read body and extract model — don't restrict by path.
 	// Cloud Code may use non-standard paths for content generation.
 	handleStart := time.Now()
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
+	bodyBytes, err := readRequestBodyCapped(r)
 	if err != nil {
-		log.Printf("[Gemini] Failed to read body, passing through: %v", err)
-		return r, nil
+		log.Printf("[Gemini] Rejecting request: %v", err)
+		return r, goproxy.NewResponse(r, "text/plain", http.StatusRequestEntityTooLarge, "Request body too large")
 	}
 	if len(bodyBytes) > 256<<10 {
 		log.Printf("[Gemini] timing: body %d bytes read in %v", len(bodyBytes), time.Since(handleStart))

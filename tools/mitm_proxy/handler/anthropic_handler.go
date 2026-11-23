@@ -18,8 +18,6 @@ import (
 	"github.com/elazarl/goproxy"
 )
 
-const maxRequestBodySize = 10 * 1024 * 1024 // 10MB
-
 type AnthropicHandler struct {
 	providerRegistry   *provider.Registry
 	translatorRegistry *translator.Registry
@@ -56,9 +54,10 @@ func (h *AnthropicHandler) Match(req *http.Request) bool {
 func (h *AnthropicHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 	log.Printf("[Anthropic] Intercepted API Call: %s", r.URL.Path)
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
+	bodyBytes, err := readRequestBodyCapped(r)
 	if err != nil {
-		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadRequest, "Failed to read body")
+		log.Printf("[Anthropic] Rejecting request: %v", err)
+		return r, goproxy.NewResponse(r, "text/plain", http.StatusRequestEntityTooLarge, "Request body too large")
 	}
 
 	var modelDetect struct {

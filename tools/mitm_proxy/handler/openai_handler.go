@@ -72,10 +72,10 @@ func (h *OpenAIHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	start := time.Now()
 	log.Printf("[OpenAI] Intercepted: %s %s", r.URL.Host, r.URL.Path)
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
+	bodyBytes, err := readRequestBodyCapped(r)
 	if err != nil {
-		log.Printf("[OpenAI] Failed to read body: %v", err)
-		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadRequest, "Failed to read body")
+		log.Printf("[OpenAI] Rejecting request: %v", err)
+		return r, goproxy.NewResponse(r, "text/plain", http.StatusRequestEntityTooLarge, "Request body too large")
 	}
 
 	if len(bodyBytes) > 256<<10 {
