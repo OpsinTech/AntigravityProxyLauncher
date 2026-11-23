@@ -818,13 +818,13 @@ private struct MitmToggleRow: View {
                         .toggleStyle(.switch)
                         .labelsHidden()
                         .scaleEffect(0.85)
-                        .help("开启或关闭后需重新「修复应用」应用方可生效")
+                        .help("切换后会自动重启本地网关并生效")
                     }
                 }
 
                 Text(isGemini
                      ? "Gemini 为独立应用通道，无需模型映射"
-                     : "将 AI 接口请求重定向至本地转译代理。⚠️ 开关变更后需重新「修复应用」")
+                     : "将 AI 接口请求重定向至本地转译代理，切换后自动重启网关生效")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }

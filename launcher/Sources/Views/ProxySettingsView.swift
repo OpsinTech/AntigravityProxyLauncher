@@ -186,7 +186,7 @@ struct ProxySettingsView: View {
                     Toggle("", isOn: modelRoutingToggleBinding)
                         .toggleStyle(.switch)
                         .labelsHidden()
-                        .help("开启或关闭后需重新「修复应用」方可生效")
+                        .help("切换后会自动重启本地网关并生效")
                 }
                 readOnlyRow(label: "日志级别", value: appState.proxyConfigDraft.logLevel)
                 readOnlyRow(label: "FakeIP", value: appState.proxyConfigDraft.fakeIP.enabled ? "开 · \(appState.proxyConfigDraft.fakeIP.cidr)" : "关")

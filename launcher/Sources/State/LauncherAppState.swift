@@ -441,6 +441,11 @@ final class LauncherAppState: ObservableObject {
             configStatusMessage = "配置已保存"
             configErrorMessage = nil
             appendLog("代理配置已保存: \(result.userConfigPath)")
+            // The Go gateway pins its upstream endpoint and routing mode at
+            // launch, so saved changes only take effect after a restart. Do it
+            // now instead of leaving the process dialing a dead port (every
+            // request then fails as "502 Upstream error").
+            ProxyManager.shared.restartIfRuntimeConfigChanged(to: proxyConfigDraft)
         } catch {
             configErrorMessage = "保存配置失败: \(error.localizedDescription)"
             appendLog("保存代理配置失败: \(error.localizedDescription)")
