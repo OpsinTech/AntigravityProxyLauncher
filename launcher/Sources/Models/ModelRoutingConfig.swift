@@ -18,30 +18,53 @@ struct GeminiBuiltinModel: Identifiable, Hashable {
     }
 }
 
-/// 内置 Gemini 模型列表（2026-10-30 从 daily-cloudcode-pa.googleapis.com fetchAvailableModels 抓取的真实可用 ID，
-/// 其中包含新发布的 Gemini 4 Argon：gemini-4-argon-{high,low,medium}，
-/// 以及 Google 后端同期开放的 Claude 5.5（Opus/Sonnet）与 GPT-OSS 120B）
-/// 注意：后端要求带后缀的 ID（-high/-low/-medium/-tiered/-agent 等），裸 ID（如 gemini-4-argon）会返回 404。
-/// 显示名直接取自 fetchAvailableModels 响应的 display name（个别为 "-" 的 tiered 模型按同族命名）。
-/// 已移除后端不再提供的 gemini-3.7-flash-* / gemini-3.6-flash-* / gemini-3.1-pro-*，
+/// 内置 Gemini 模型列表（2026-11-23 按 Antigravity 官方文档「Choose a model」与
+/// App v2.34.0 内置模型注册表核对，清单与 daily-cloudcode-pa fetchAvailableModels 的可用 ID 一致）
+/// 2026-11 连续上线三款 Gemini 4：
+///   - Neon（11-18，未手动选择模型时的默认项，low/medium/high/xhigh）
+///   - Carbon（11-10，最强长程工程模型，low/medium/high）
+///   - Hydrogen（11-12，快速执行模型，low/medium/high/xhigh）
+/// 加上 10 月的 Argon 与仍在提供的 Gemini 3.8 Flash；Claude 5.5 同期补齐第 4 档 max。
+/// 注意：消费级后端要求带档位后缀的 ID（-high/-low/-medium/-xhigh/-tiered 等），
+/// 裸 ID（如 gemini-4-neon）会返回 404；裸 ID 只在 Gemini Enterprise / ADC 下使用。
+/// Orchestrator 是「规划 + 执行」的组合模式而非独立模型，企业版 ID 为 gemini-pro-orchestrator，
+/// 其规划/执行模型已分别包含在下面的清单里，因此不在此重复列出。
+/// 显示名取自 App 模型注册表（个别为 "-" 的 tiered 模型按同族命名）。
+/// 已移除后端不再提供的 gemini-3.7-flash-* / gemini-3.6-flash-* / gemini-3.1-pro-*（仅企业版可见），
 /// 以及旧款 gemini-2.5-* / gemini-3-flash / gemini-3.1-flash-image/lite / gemini-3.5-flash-lite。
 let GeminiBuiltinModels: [GeminiBuiltinModel] = [
-    // Gemini 4 Argon（2026-10 新发布）
-    GeminiBuiltinModel("gemini-4-argon-high", "Gemini 4 Argon (High)"),
+    // Gemini 4 Neon（2026-11-18 发布，默认模型）
+    GeminiBuiltinModel("gemini-4-neon-low", "Gemini 4 Neon (Low)"),
+    GeminiBuiltinModel("gemini-4-neon-medium", "Gemini 4 Neon (Medium)"),
+    GeminiBuiltinModel("gemini-4-neon-high", "Gemini 4 Neon (High)"),
+    GeminiBuiltinModel("gemini-4-neon-xhigh", "Gemini 4 Neon (XHigh)"),
+    // Gemini 4 Carbon（2026-11-10 发布）
+    GeminiBuiltinModel("gemini-4-carbon-low", "Gemini 4 Carbon (Low)"),
+    GeminiBuiltinModel("gemini-4-carbon-medium", "Gemini 4 Carbon (Medium)"),
+    GeminiBuiltinModel("gemini-4-carbon-high", "Gemini 4 Carbon (High)"),
+    // Gemini 4 Argon（2026-10 发布）
     GeminiBuiltinModel("gemini-4-argon-low", "Gemini 4 Argon (Low)"),
     GeminiBuiltinModel("gemini-4-argon-medium", "Gemini 4 Argon (Medium)"),
-    // Gemini 3.8 Flash（2026-09-02 发布）
-    GeminiBuiltinModel("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
+    GeminiBuiltinModel("gemini-4-argon-high", "Gemini 4 Argon (High)"),
+    // Gemini 4 Hydrogen（2026-11-12 发布）
+    GeminiBuiltinModel("gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"),
+    GeminiBuiltinModel("gemini-4-hydrogen-medium", "Gemini 4 Hydrogen (Medium)"),
+    GeminiBuiltinModel("gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"),
+    GeminiBuiltinModel("gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (XHigh)"),
+    // Gemini 3.8 Flash（2026-09-02 发布，Free/Plus 仍在用）
     GeminiBuiltinModel("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
     GeminiBuiltinModel("gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"),
+    GeminiBuiltinModel("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
     GeminiBuiltinModel("gemini-3.8-flash-tiered", "Gemini 3.8 Flash (Tiered)"),
-    // Claude（Google 后端提供，走应用 Google 认证）
-    GeminiBuiltinModel("claude-opus-5-5-high", "Claude Opus 5.5 (High)"),
+    // Claude（Google 后端提供，走应用 Google 认证；2026-11 起支持 max 档）
     GeminiBuiltinModel("claude-opus-5-5-low", "Claude Opus 5.5 (Low)"),
     GeminiBuiltinModel("claude-opus-5-5-medium", "Claude Opus 5.5 (Medium)"),
-    GeminiBuiltinModel("claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"),
+    GeminiBuiltinModel("claude-opus-5-5-high", "Claude Opus 5.5 (High)"),
+    GeminiBuiltinModel("claude-opus-5-5-max", "Claude Opus 5.5 (Max)"),
     GeminiBuiltinModel("claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low)"),
     GeminiBuiltinModel("claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Medium)"),
+    GeminiBuiltinModel("claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High)"),
+    GeminiBuiltinModel("claude-sonnet-5-5-max", "Claude Sonnet 5.5 (Max)"),
     // GPT-OSS（Google 后端提供）
     GeminiBuiltinModel("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"),
 ]
@@ -250,34 +273,24 @@ extension ModelRoutingConfig {
             apiKey: "",
             models: [
                 // 混元（腾讯自研）
-                "hy4-preview",
-                "hy3-preview",
                 "hy3",
                 "hunyuan-chat",
                 // DeepSeek
                 "deepseek-v4.1-flash",
                 "deepseek-v4-pro",
                 "deepseek-v4-flash",
-                "deepseek-v3.2",
-                "deepseek-v3",
-                // 智谱 GLM（glm-5.1 只支持 reasoning effort = medium，传 high 会 400）
+                // 智谱 GLM（glm-5.0-turbo 必须显式带 reasoning_effort：low/medium/high 均可，不带则 400 code 11150）
                 "glm-5.3",
                 "glm-5.2",
-                "glm-5.1",
-                "glm-5.0",
-                "glm-5v-turbo",
+                "glm-5.0-turbo",
                 // 月之暗面 Kimi（Kimi-K3 的官方 id 是 kimi-k3-2；kimi-k3 作为别名同样可用）
                 "kimi-k3-2",
-                "kimi-k2.7",
-                "kimi-k2.6",
                 "kimi-k2.5",
                 // MiniMax（MiniMax-M3 的官方 id 是 minimax-m3-pay；minimax-m3 别名同样可用）
                 "minimax-m3-pay",
                 "minimax-m2.7",
                 // StepFun（Step）
                 "step-5-preview",
-                // Auto 自动路由（实测落到 deepseek-v4.1-flash）
-                "auto",
                 // 2026-11 WorkBuddy 模型选择器新增项；以下 ID 均已用真实请求验证（HTTP 200）。
                 // 注意 Kimi-K3.1-Pro-Hig… 的完整 id 是 -highspeed 而非 -high。
                 "glm-5.3-flash",
@@ -287,8 +300,35 @@ extension ModelRoutingConfig {
                 "kimi-k2.8-preview",
                 "minimax-m3.1-flash",
                 "mimo-v2.6-pro",
-                "space-bunny"
+                "space-bunny",
+                // 2026-11-13 WorkBuddy 选择器再次更新后，对 copilot.tencent.com 逐个实测（stream 请求，HTTP 200）。
+                // fast/balanced/deep-model 是 WorkBuddy 新的「快速/均衡/极致」三档别名，取代了原来的 auto
+                //（三档都强制开推理，effort=medium，计费 x0.15 / x0.50 / x1.00）。
+                "fast-model",
+                "balanced-model",
+                "deep-model",
+                // 混元 Hy3 / Hy4 的具体变体（WorkBuddy 用这些替代了笼统的 hy3-preview / hy4-preview）
+                "hy3-b",
+                "hy3-c",
+                "hy3-x",
+                "hy4-preview-ctrl",
+                "hy4-preview-exp",
+                "hy4preview-exp1",
+                "hy4preview-exp2",
+                "hy4free",
+                "hy4std",
+                // DeepSeek-V3.2 在 WorkBuddy 侧的托管 id（等于旧的 deepseek-v3.2，后者仍可用）
+                "deepseek-v3-2-volc"
             ],
+            // 未收录（WorkBuddy 客户端清单里有，但本网关不认，照抄会 400）：
+            //   400 code 11102 service info not found —— hy4-preview-x / minimax-m2.5 / glm-4.6 / glm-4.6v /
+            //   kimi-k2-thinking / kimi-k2-instruct-taiji / deepseek-v3-1 / deepseek-v3-1-volc /
+            //   deepseek-v3-0324{,-lkeap} / deepseek-r1-0528{,-lkeap} / default-1.1 / default-1.2 /
+            //   hunyuan-2.0-instruct。它们属于 WorkBuddy 自有后端（www.workbuddy.cn）的别名。
+            //   另 deepseek-v3-1-lkeap：id 存在但上游固定 500（temporarily unavailable），暂不加入。
+            // 2026-11-13 已按 WorkBuddy 选择器的下线清单移除（其中多数实测仍 200，如需回滚从 git 历史恢复）：
+            //   auto / glm-5.1 / glm-5.0 / glm-5v-turbo / kimi-k2.6 / kimi-k2.7 / hy3-preview / hy4-preview /
+            //   deepseek-v3.2 / deepseek-v3（deepseek-v3.2 的替代项是上面的 deepseek-v3-2-volc）。
             options: [
                 "api_path": "/v2/chat/completions"
             ]
