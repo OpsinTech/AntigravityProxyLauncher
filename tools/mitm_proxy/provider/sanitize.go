@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log"
+	"strings"
 )
 
 // neutralSystemPrompt 用来替换被上游判定为"第三方客户端"的 system 提示词。
@@ -39,11 +40,21 @@ func containsBlockedFingerprint(body []byte) bool {
 	return false
 }
 
-// sanitizeSystemPrompt 把 system 消息的内容原样搬到紧随其后的 user 消息里，
-// system 本身换成一句中性文案。
+// isInstructionRole 判断某条消息是否承载“系统指令”。OpenAI 新版协议用
+// developer 取代 system，两类角色都要处理。
+//
+// 注意：CodeBuddy 网关并不只是对 developer 的内容做指纹校验，它根本不接受
+// developer 这个角色——即使内容换成中性文案，仍然回 400 code 11128。因此
+// 下面搬运内容的同时会把占位消息的 role 统一降级成 system。
+func isInstructionRole(role string) bool {
+	return role == "system" || role == "developer"
+}
+
+// sanitizeSystemPrompt 把开头的系统指令消息（system / developer）内容原样搬到
+// 紧随其后的 user 消息里，指令消息本身换成一句中性文案。
 //
 // 背景：CodeBuddy / WorkBuddy 网关会对 system 提示词做客户端指纹校验，命中已知
-// 第三方 agent（如 DeepSeek Harness、Claude Code）的模板就直接返回
+// 第三方 agent（如 DeepSeek Harness、Claude Code、Codex）的模板就直接返回
 // 400 code 11128「Illegal API invocation from an unapproved channel」。
 // 实测该校验只看 system 角色：同一段文本放进 user 消息即放行，因此这里
 // 保留全部指令内容，只改变它在消息序列中的位置，避免削弱模型的工具使用能力。
@@ -53,14 +64,15 @@ func containsBlockedFingerprint(body []byte) bool {
 //
 // 以下情况原样返回，避免破坏请求：
 //   - 未开启开关
-//   - 首条消息不是 system，或 system 内容不是纯文本（多模态/结构化）
+//   - 首条消息不是 system/developer，或指令内容不是纯文本（多模态/结构化）
 //   - JSON 解析失败
 func sanitizeSystemPrompt(rawBody []byte, cfg ProviderConfig) []byte {
 	if cfg.Options["sanitize_system_prompt"] != "true" {
 		return rawBody
 	}
-	// 没命中已知特征就不动，保持请求原样（也避免大请求体的解析开销）
-	if !containsBlockedFingerprint(rawBody) {
+	// 没命中已知特征就不动，保持请求原样（也避免大请求体的解析开销）；
+	// developer 角色本身会被网关拒绝，即使内容不含指纹也要改写。
+	if !containsBlockedFingerprint(rawBody) && !bytes.Contains(rawBody, []byte(`"developer"`)) {
 		return rawBody
 	}
 
@@ -78,28 +90,48 @@ func sanitizeSystemPrompt(rawBody []byte, cfg ProviderConfig) []byte {
 		return rawBody
 	}
 
-	var role string
-	if err := json.Unmarshal(messages[0]["role"], &role); err != nil || role != "system" {
+	var firstRole string
+	if err := json.Unmarshal(messages[0]["role"], &firstRole); err != nil || !isInstructionRole(firstRole) {
+		log.Printf("[OpenAI:%s] sanitize: 跳过，首条消息 role=%q 不是 system/developer", cfg.ID, firstRole)
 		return rawBody
 	}
 
-	var content string
-	if err := json.Unmarshal(messages[0]["content"], &content); err != nil || content == "" {
+	// 开头可能连续出现多条指令消息（例如 system + developer 混用），
+	// 一并搬走，否则后面那条仍会带着原始提示词被上游指纹命中。
+	var instructions []string
+	leading := 0
+	for leading < len(messages) {
+		var role string
+		if err := json.Unmarshal(messages[leading]["role"], &role); err != nil || !isInstructionRole(role) {
+			break
+		}
+		var content string
+		if err := json.Unmarshal(messages[leading]["content"], &content); err != nil || content == "" {
+			break
+		}
+		instructions = append(instructions, content)
+		leading++
+	}
+
+	if leading == 0 {
+		log.Printf("[OpenAI:%s] sanitize: 跳过，role=%q 的 content 不是纯文本（多模态/结构化）", cfg.ID, firstRole)
 		return rawBody
 	}
 
-	newSystem, err := json.Marshal(map[string]string{"role": "system", "content": neutralSystemPrompt})
+	// 占位消息统一用 system：CodeBuddy 网关不认 developer 角色，会把整条请求
+	// 判成 11128；其余角色保持不变。
+	placeholder, err := json.Marshal(map[string]string{"role": "system", "content": neutralSystemPrompt})
 	if err != nil {
 		return rawBody
 	}
-	moved, err := json.Marshal(map[string]string{"role": "user", "content": content})
+	moved, err := json.Marshal(map[string]string{"role": "user", "content": strings.Join(instructions, "\n\n")})
 	if err != nil {
 		return rawBody
 	}
 
 	rebuilt := make([]json.RawMessage, 0, len(messages)+1)
-	rebuilt = append(rebuilt, newSystem, moved)
-	for _, message := range messages[1:] {
+	rebuilt = append(rebuilt, placeholder, moved)
+	for _, message := range messages[leading:] {
 		encoded, err := json.Marshal(message)
 		if err != nil {
 			return rawBody
@@ -118,6 +150,11 @@ func sanitizeSystemPrompt(rawBody []byte, cfg ProviderConfig) []byte {
 		return rawBody
 	}
 
-	log.Printf("[OpenAI:%s] sanitize: system prompt (%d 字符) 已移入 user 消息", cfg.ID, len(content))
+	chars := 0
+	for _, instruction := range instructions {
+		chars += len(instruction)
+	}
+	log.Printf("[OpenAI:%s] sanitize: %s prompt (%d 字符, %d 条) 已移入 user 消息",
+		cfg.ID, firstRole, chars, leading)
 	return out
 }

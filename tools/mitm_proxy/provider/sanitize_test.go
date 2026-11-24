@@ -97,3 +97,50 @@ func TestSanitizeSystemPromptSkipsUnexpectedShapes(t *testing.T) {
 		}
 	}
 }
+
+// OpenAI 新版协议用 developer 取代 system。只处理 system 会让 developer 客户端
+// 的提示词原样漏给上游，命中指纹后返回 400 code 11128。
+func TestSanitizeSystemPromptHandlesDeveloperRole(t *testing.T) {
+	raw := []byte(`{"model":"hy3","messages":[{"role":"developer","content":"You are Codex, a coding agent running in the Codex CLI."},{"role":"user","content":"hi"}]}`)
+	cfg := ProviderConfig{ID: "codebuddy", Options: map[string]string{"sanitize_system_prompt": "true"}}
+
+	messages := decodeMessages(t, sanitizeSystemPrompt(raw, cfg))
+	if len(messages) != 3 {
+		t.Fatalf("期望 3 条消息，得到 %d: %v", len(messages), messages)
+	}
+	if messages[0]["role"] != "system" {
+		t.Fatalf("占位消息必须降级成 system（网关不接受 developer），得到 %v", messages[0]["role"])
+	}
+	if messages[0]["content"] == "You are Codex, a coding agent running in the Codex CLI." {
+		t.Fatalf("developer 内容应被替换为中性文案")
+	}
+	if messages[1]["role"] != "user" || messages[1]["content"] != "You are Codex, a coding agent running in the Codex CLI." {
+		t.Fatalf("原始 developer 内容应原样移到 user 消息，得到 %v", messages[1])
+	}
+	for i, message := range messages {
+		if message["role"] == "developer" {
+			t.Fatalf("第 %d 条仍是 developer 角色，网关会直接回 11128", i)
+		}
+	}
+}
+
+// 开头连续出现多条指令消息（system + developer 混用）时，必须全部搬走，
+// 否则后面那条仍然带着原始提示词被上游指纹命中。
+func TestSanitizeSystemPromptMergesLeadingInstructionMessages(t *testing.T) {
+	raw := []byte(`{"messages":[{"role":"system","content":"SYS1"},{"role":"developer","content":"SYS2"},{"role":"user","content":"hi"}]}`)
+	cfg := ProviderConfig{ID: "codebuddy", Options: map[string]string{"sanitize_system_prompt": "true"}}
+
+	messages := decodeMessages(t, sanitizeSystemPrompt(raw, cfg))
+	if len(messages) != 3 {
+		t.Fatalf("期望 3 条消息（1 占位 + 1 搬运 + 原 user），得到 %d: %v", len(messages), messages)
+	}
+	if messages[0]["role"] != "system" || messages[0]["content"] == "SYS1" {
+		t.Fatalf("占位消息应为中性 system，得到 %v", messages[0])
+	}
+	if messages[1]["content"] != "SYS1\n\nSYS2" {
+		t.Fatalf("两条指令内容应按顺序合并进 user，得到 %v", messages[1]["content"])
+	}
+	if messages[2]["content"] != "hi" {
+		t.Fatalf("原始 user 消息应保留，得到 %v", messages[2])
+	}
+}

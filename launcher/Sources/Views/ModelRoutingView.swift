@@ -498,10 +498,7 @@ struct ModelRoutingView: View {
         errorMessage = nil
         statusMessage = nil
         isRestarting = true
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            ProxyManager.shared.restartProxy()
-
+        ProxyManager.shared.restartProxy(reason: "routing rules saved") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 let ok = ProxyManager.shared.healthCheck()
                 isRestarting = false
@@ -1016,11 +1013,14 @@ private struct SourceModel: Identifiable {
 }
 
 /// 映射规则可选的「源模型」候选（App 内部发起的模型名称）。
-/// 与 `GeminiBuiltinModels`（2026-10-30 从 daily-cloudcode-pa fetchAvailableModels 抓取的清单）保持同步。
+/// 与 `GeminiBuiltinModels`（2026-11-23 按官方文档与 App v2.34.0 模型表核对的清单）保持同步。
 /// 这里统一使用不带档位后缀的「家族名」作为匹配模式：底层 `FindMatchingRule` 走子串匹配，
-/// 因此 `claude-sonnet-5-5` 可覆盖 `claude-sonnet-5-5-high/low/medium` 全部档位。
+/// 因此 `claude-sonnet-5-5` 可覆盖 `claude-sonnet-5-5-low/medium/high/max` 全部档位。
 private let sourceModels: [SourceModel] = [
+    .init(pattern: "gemini-4-neon", displayName: "Gemini 4 Neon"),
+    .init(pattern: "gemini-4-carbon", displayName: "Gemini 4 Carbon"),
     .init(pattern: "gemini-4-argon", displayName: "Gemini 4 Argon"),
+    .init(pattern: "gemini-4-hydrogen", displayName: "Gemini 4 Hydrogen"),
     .init(pattern: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash"),
     .init(pattern: "claude-opus-5-5", displayName: "Claude Opus 5.5"),
     .init(pattern: "claude-sonnet-5-5", displayName: "Claude Sonnet 5.5"),

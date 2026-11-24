@@ -160,23 +160,7 @@ func main() {
 	proxy := goproxy.NewProxyHttpServer()
 	proxy.Verbose = false
 
-	// Configure SOCKS5 proxy for outbound connections (dedicated transport, not global)
-	socks5Addr := os.Getenv("SOCKS5_PROXY")
-	if socks5Addr == "" {
-		socks5Addr = "127.0.0.1:7897"
-	}
-
-	socks5Transport, err := newSocks5Transport(socks5Addr)
-	if err != nil {
-		log.Printf("[Warning] Failed to create SOCKS5 dialer: %v, using direct connection", err)
-	} else {
-		// Set as default for shared HTTP client
-		http.DefaultTransport = socks5Transport
-		// Set for goproxy transport
-		proxy.Tr = socks5Transport
-		log.Printf("[MITM] Outbound connections routed through SOCKS5: %s (dial=%v tls=%v header=%v)",
-			socks5Addr, socks5DialTimeout, upstreamTLSHandshakeTimeout, upstreamResponseHeaderTimeout)
-	}
+	configureOutbound(proxy)
 
 	// Export goproxy CA certificate to absolute paths
 	goproxyCA := os.Getenv("GOPROXY_CA_PATH")
@@ -267,21 +251,38 @@ func main() {
 	log.Println("[MITM] Server shut down gracefully")
 }
 
+// configureOutbound wires the gateway's outbound transport from the resolved
+// upstream proxy. Both the model-routing and passthrough modes use it, so a
+// SOCKS5/HTTP mismatch behaves the same way (and is logged the same way).
+func configureOutbound(proxy *goproxy.ProxyHttpServer) {
+	upstream := config.LoadUpstreamProxy()
+	transport, err := newUpstreamTransport(upstream.Type, upstream.Address())
+	if err != nil {
+		log.Printf("[Warning] Failed to create %s upstream transport for %s: %v, using direct connection",
+			upstream.Type, upstream.Address(), err)
+		return
+	}
+
+	http.DefaultTransport = transport
+	proxy.Tr = transport
+
+	// goproxy tunnels non-MITM CONNECT traffic itself; http.Transport.Proxy is
+	// not consulted there, so HTTP(S) upstreams also need a CONNECT dialer.
+	if upstream.Type == "http" || upstream.Type == "https" {
+		proxy.ConnectDial = newHTTPConnectDialer(upstream.Type, upstream.Address())
+	}
+
+	log.Printf("[MITM] Outbound connections routed through %s: %s (dial=%v tls=%v header=%v)",
+		strings.ToUpper(upstream.Type), upstream.Address(),
+		socks5DialTimeout, upstreamTLSHandshakeTimeout, upstreamResponseHeaderTimeout)
+}
+
 // runPassthroughOnly runs the proxy without model routing
 func runPassthroughOnly() {
 	proxy := goproxy.NewProxyHttpServer()
 	proxy.Verbose = false
 
-	// Configure SOCKS5
-	socks5Addr := os.Getenv("SOCKS5_PROXY")
-	if socks5Addr == "" {
-		socks5Addr = "127.0.0.1:7897"
-	}
-	socks5Transport, err := newSocks5Transport(socks5Addr)
-	if err == nil {
-		http.DefaultTransport = socks5Transport
-		proxy.Tr = socks5Transport
-	}
+	configureOutbound(proxy)
 
 	// Passthrough mode: tunnel all CONNECT requests without interception
 	proxy.OnRequest().HandleConnect(goproxy.FuncHttpsHandler(func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {

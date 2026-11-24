@@ -61,7 +61,39 @@ struct PatchedAppHealthService {
             return .repairRequired("wrapper 脚本不可执行，请重新修复。")
         }
 
+        // The CLI's bundled auto-updater (or a manual reinstall) can overwrite
+        // `<dir>/agy` with an official build. Official builds are hardened and
+        // ignore DYLD_INSERT_LIBRARIES, so the proxy silently disappears and the
+        // CLI dials Google directly (login fails with "token exchange failed:
+        // i/o timeout"). Detect both halves of that drift.
+        guard isProxyWrapper(at: wrapper) else {
+            return .repairRequired("CLI 入口已被官方自动更新覆盖，注入已失效，请重新修复。")
+        }
+
+        guard binaryHasInjectionEntitlement(at: realBinary) else {
+            return .repairRequired("CLI 二进制签名已被覆盖，系统会忽略 DYLD 注入，请重新修复。")
+        }
+
         return .ready
+    }
+
+    /// The generated wrapper is a shell script that installs the injected dylib.
+    private func isProxyWrapper(at url: URL) -> Bool {
+        guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        return contents.contains("libAntigravityTun.dylib")
+            && contents.contains("DYLD_INSERT_LIBRARIES")
+    }
+
+    /// `disable-library-validation` is what lets DYLD_INSERT_LIBRARIES load our
+    /// unsigned dylib into the (hardened runtime) CLI binary.
+    private func binaryHasInjectionEntitlement(at url: URL) -> Bool {
+        guard let result = try? CommandRunner.run(
+            "/usr/bin/codesign",
+            ["-d", "--entitlements", "-", url.path]
+        ) else {
+            return false
+        }
+        return result.stdout.contains("disable-library-validation")
     }
 
     private func latestMetadata() -> PatchMetadata? {

@@ -32,9 +32,45 @@ const passthroughRetryBaseDelay = time.Second
 // transport timeout per attempt, tripling the wait before the client saw a 502.
 const passthroughRetryBudget = 20 * time.Second
 
+// passthroughControlRetryBudget is the ceiling for idempotent control RPCs
+// (listExperiments / loadCodeAssist / fetchUserInfo / ...). They are cheap and
+// their failure is amplified: one swallowed TLS ClientHello makes the IDE treat
+// all Gemini models as unavailable. One retry (15s timeout + 1s backoff + 15s)
+// fits in this budget, so a transient node hiccup no longer surfaces as a 502
+// that breaks model selection.
+const passthroughControlRetryBudget = 32 * time.Second
+
+// isTimeoutOrCanceled reports whether err is a timeout, a cancellation, or a
+// caller deadline — the class that is only worth retrying for idempotent
+// control RPCs.
+func isTimeoutOrCanceled(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// isRetryableControlRPCTimeout narrows isTimeoutOrCanceled to genuine transport
+// timeouts. The caller's own cancellation (context.Canceled) and its deadline
+// (context.DeadlineExceeded) stay one-shot even for control RPCs: the client is
+// already gone, so retrying would only waste a request.
+func isRetryableControlRPCTimeout(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return isTimeoutOrCanceled(err)
+}
+
 // isRetryablePassthroughError reports whether another attempt can plausibly
-// succeed. Timeouts and client cancellations are one-shot: the path or the
-// caller is gone, and retrying only multiplies the latency the user sees.
+// succeed. Timeouts and client cancellations are one-shot for model calls: the
+// path or the caller is gone, and retrying only multiplies the latency the user
+// sees.
 func isRetryablePassthroughError(err error) bool {
 	if err == nil {
 		return false
@@ -55,12 +91,7 @@ func isRetryablePassthroughError(err error) bool {
 // maxRequestBodySize, so every upstream attempt can replay it. Returns nil
 // when the request carries no body.
 func readRequestBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil {
-		return nil, nil
-	}
-	b, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize))
-	r.Body.Close()
-	return b, err
+	return readRequestBodyCapped(r)
 }
 
 // roundTripWithRetry sends r upstream through the proxy chain (ctx.RoundTrip,
@@ -79,15 +110,24 @@ func readRequestBody(r *http.Request) ([]byte, error) {
 // streams — or (nil, lastErr) once the attempts are exhausted.
 func roundTripWithRetry(tag string, r *http.Request, bodyBytes []byte, ctx *goproxy.ProxyCtx, maxRetries int) (*http.Response, error) {
 	isStream := strings.Contains(r.URL.Path, "streamGenerateContent")
+	// Idempotent control RPCs get one extra attempt even on timeout: their
+	// failure cascades into "all Gemini models unavailable" in the IDE, and a
+	// node hiccup is usually gone a second later. Model calls keep the strict
+	// fail-fast policy so a dead path cannot stack latency.
+	controlRPC := isNonModelRpc(r.URL.Path)
+	budget := passthroughRetryBudget
+	if controlRPC {
+		budget = passthroughControlRetryBudget
+	}
 
 	start := time.Now()
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			delay := passthroughRetryBaseDelay * time.Duration(attempt)
-			if spent := time.Since(start); spent+delay >= passthroughRetryBudget {
+			if spent := time.Since(start); spent+delay >= budget {
 				log.Printf("[%s] Passthrough %s: abandoning retries after %d attempt(s) (%v of %v budget used, last: %v)",
-					tag, r.URL.Path, attempt, spent.Round(time.Millisecond), passthroughRetryBudget, lastErr)
+					tag, r.URL.Path, attempt, spent.Round(time.Millisecond), budget, lastErr)
 				break
 			}
 			log.Printf("[%s] Passthrough %s: transient upstream failure, retry %d/%d in %v (last: %v)",
@@ -107,9 +147,9 @@ func roundTripWithRetry(tag string, r *http.Request, bodyBytes []byte, ctx *gopr
 		resp, err := ctx.RoundTrip(r)
 		if err != nil {
 			lastErr = fmt.Errorf("roundtrip failed: %w", err)
-			if !isRetryablePassthroughError(err) {
-				// Timeout or cancellation: another attempt cannot help and would
-				// only stack more waiting on top of the client's.
+			if !isRetryablePassthroughError(err) && !(controlRPC && isRetryableControlRPCTimeout(err)) {
+				// Timeout or cancellation on a model call: another attempt cannot
+				// help and would only stack more waiting on top of the client's.
 				log.Printf("[%s] Passthrough %s: not retrying after %v (dead path or canceled request)",
 					tag, r.URL.Path, lastErr)
 				break

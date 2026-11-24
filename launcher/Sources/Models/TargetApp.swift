@@ -177,6 +177,24 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    /// Extra environment variables exported by the CLI wrapper before exec'ing the real binary.
+    ///
+    /// `agy` ships a background auto-updater that rewrites files in its install
+    /// directory. The downloaded build is notarized (hardened runtime, no
+    /// `disable-library-validation`), so macOS silently ignores
+    /// `DYLD_INSERT_LIBRARIES` for it and the tun injection disappears — the CLI
+    /// then dials Google directly and login/API calls time out. The updater
+    /// honours `AGY_CLI_DISABLE_AUTO_UPDATE`; CLI updates should instead go
+    /// through the launcher's patch flow (which re-signs with our entitlements).
+    var cliWrapperEnvironment: [String: String] {
+        switch self {
+        case .agy:
+            return ["AGY_CLI_DISABLE_AUTO_UPDATE": "1"]
+        case .antigravity, .antigravityIDE, .gemini, .claudeCode, .codex:
+            return [:]
+        }
+    }
+
     /// The real binary name inside the patched CLI directory
     var cliRealBinaryName: String {
         switch self {
