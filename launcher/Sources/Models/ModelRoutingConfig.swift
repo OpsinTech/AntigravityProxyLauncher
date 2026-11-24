@@ -272,54 +272,51 @@ extension ModelRoutingConfig {
             apiEndpoint: "copilot.tencent.com",
             apiKey: "",
             models: [
-                // 混元（腾讯自研）
-                "hy3",
+                // 2026-11-24 按网关 GET /v2/enterprises/personal/models 的下发清单重新同步，
+                // 下列候选 ID 均已用真实 stream 请求（POST /v2/chat/completions）验证 HTTP 200。
+                // 混元（腾讯自研）：hy4std 回包里的 model 名为 hy4；hy4flash-free 是限时免费档
+                "hy4std",
+                "hy4flash",
+                "hy4flash-free",
                 "hunyuan-chat",
-                // DeepSeek
+                // DeepSeek（v4.1-flash 支持 low/high/max 三档 reasoning effort）
                 "deepseek-v4.1-flash",
                 "deepseek-v4-pro",
                 "deepseek-v4-flash",
-                // 智谱 GLM（glm-5.0-turbo 必须显式带 reasoning_effort：low/medium/high 均可，不带则 400 code 11150）
+                "deepseek-v3-2-volc",
+                // 智谱 GLM（glm-5.2 只接受 high/xhigh，其余支持 low/high/max）
                 "glm-5.3",
-                "glm-5.2",
-                "glm-5.0-turbo",
-                // 月之暗面 Kimi（Kimi-K3 的官方 id 是 kimi-k3-2；kimi-k3 作为别名同样可用）
-                "kimi-k3-2",
-                "kimi-k2.5",
-                // MiniMax（MiniMax-M3 的官方 id 是 minimax-m3-pay；minimax-m3 别名同样可用）
-                "minimax-m3-pay",
-                "minimax-m2.7",
-                // StepFun（Step）
-                "step-5-preview",
-                // 2026-11 WorkBuddy 模型选择器新增项；以下 ID 均已用真实请求验证（HTTP 200）。
-                // 注意 Kimi-K3.1-Pro-Hig… 的完整 id 是 -highspeed 而非 -high。
                 "glm-5.3-flash",
-                "glm-5.3-flashx",
+                "glm-5.2",
+                "glm-5.0",
+                // 月之暗面 Kimi
                 "kimi-k3.1-pro",
-                "kimi-k3.1-pro-highspeed",
+                "kimi-k3-1",
                 "kimi-k2.8-preview",
+                "kimi-k2.5",
+                // MiniMax / StepFun / 小米 MiMo / Space-Bunny
                 "minimax-m3.1-flash",
+                "step-5-preview",
                 "mimo-v2.6-pro",
                 "space-bunny",
-                // 2026-11-13 WorkBuddy 选择器再次更新后，对 copilot.tencent.com 逐个实测（stream 请求，HTTP 200）。
-                // fast/balanced/deep-model 是 WorkBuddy 新的「快速/均衡/极致」三档别名，取代了原来的 auto
-                //（三档都强制开推理，effort=medium，计费 x0.15 / x0.50 / x1.00）。
+                // WorkBuddy 的「快速/均衡/极致」三档别名（强制开推理，计费 x0.15 / x0.50 / x1.00）
                 "fast-model",
                 "balanced-model",
                 "deep-model",
-                // 混元 Hy3 / Hy4 的具体变体（WorkBuddy 用这些替代了笼统的 hy3-preview / hy4-preview）
-                "hy3-b",
-                "hy3-c",
-                "hy3-x",
-                "hy4-preview-ctrl",
-                "hy4-preview-exp",
-                "hy4preview-exp1",
-                "hy4preview-exp2",
-                "hy4free",
-                "hy4std",
-                // DeepSeek-V3.2 在 WorkBuddy 侧的托管 id（等于旧的 deepseek-v3.2，后者仍可用）
-                "deepseek-v3-2-volc"
+                // 自动档：auto 由网关挑当前可用模型；default 是旧的通用别名（x2.20 积分）
+                "auto",
+                "default"
             ],
+            // 目录里仍列、但本账号请求会 400 的条目（code 11102 service info not found）：
+            //   hy4-preview-x / glm-4.7 / glm-4.6 / glm-4.6v / minimax-m2.5 / kimi-k2-thinking /
+            //   hunyuan-2.0-thinking，大概率只对企业版账号开放。
+            // 图片/视频类（hunyuan-image-alpha{,-edit} / kling-video-v3 / minimax-video-h3）
+            // 只能走多模态生成接口，/v2/chat/completions 不适用，故不收录。
+            // 未进入本次目录、但实测仍 200 的旧 ID（需要时可在路由规则里手填）：
+            //   hy3-b / hy3-c / hy3-x / hy4-preview-ctrl / hy4-preview-exp / hy4preview-exp1 /
+            //   hy4preview-exp2 / glm-5.3-flashx / kimi-k3-2 / kimi-k3.1-pro-highspeed /
+            //   minimax-m3-pay / minimax-m2.7；glm-5.0-turbo 需显式带 reasoning_effort（否则 400 11150）。
+            // 已确认下线：hy3（11158 当前账号无权限）/ hy4free（11102 不存在）。
             // 未收录（WorkBuddy 客户端清单里有，但本网关不认，照抄会 400）：
             //   400 code 11102 service info not found —— hy4-preview-x / minimax-m2.5 / glm-4.6 / glm-4.6v /
             //   kimi-k2-thinking / kimi-k2-instruct-taiji / deepseek-v3-1 / deepseek-v3-1-volc /
