@@ -307,25 +307,9 @@ extension ModelRoutingConfig {
                 "auto",
                 "default"
             ],
-            // 目录里仍列、但本账号请求会 400 的条目（code 11102 service info not found）：
-            //   hy4-preview-x / glm-4.7 / glm-4.6 / glm-4.6v / minimax-m2.5 / kimi-k2-thinking /
-            //   hunyuan-2.0-thinking，大概率只对企业版账号开放。
-            // 图片/视频类（hunyuan-image-alpha{,-edit} / kling-video-v3 / minimax-video-h3）
-            // 只能走多模态生成接口，/v2/chat/completions 不适用，故不收录。
-            // 未进入本次目录、但实测仍 200 的旧 ID（需要时可在路由规则里手填）：
-            //   hy3-b / hy3-c / hy3-x / hy4-preview-ctrl / hy4-preview-exp / hy4preview-exp1 /
-            //   hy4preview-exp2 / glm-5.3-flashx / kimi-k3-2 / kimi-k3.1-pro-highspeed /
-            //   minimax-m3-pay / minimax-m2.7；glm-5.0-turbo 需显式带 reasoning_effort（否则 400 11150）。
-            // 已确认下线：hy3（11158 当前账号无权限）/ hy4free（11102 不存在）。
-            // 未收录（WorkBuddy 客户端清单里有，但本网关不认，照抄会 400）：
-            //   400 code 11102 service info not found —— hy4-preview-x / minimax-m2.5 / glm-4.6 / glm-4.6v /
-            //   kimi-k2-thinking / kimi-k2-instruct-taiji / deepseek-v3-1 / deepseek-v3-1-volc /
-            //   deepseek-v3-0324{,-lkeap} / deepseek-r1-0528{,-lkeap} / default-1.1 / default-1.2 /
-            //   hunyuan-2.0-instruct。它们属于 WorkBuddy 自有后端（www.workbuddy.cn）的别名。
-            //   另 deepseek-v3-1-lkeap：id 存在但上游固定 500（temporarily unavailable），暂不加入。
-            // 2026-11-13 已按 WorkBuddy 选择器的下线清单移除（其中多数实测仍 200，如需回滚从 git 历史恢复）：
-            //   auto / glm-5.1 / glm-5.0 / glm-5v-turbo / kimi-k2.6 / kimi-k2.7 / hy3-preview / hy4-preview /
-            //   deepseek-v3.2 / deepseek-v3（deepseek-v3.2 的替代项是上面的 deepseek-v3-2-volc）。
+            // 未收录：本账号请求会 400（11102/11158）的模型、已下线模型，以及只能走
+            // 多模态生成接口的图片/视频模型。具体 ID 不再保留在清单里，需要回查时看
+            // git 历史中的 dd99c10（2026-11-24 的同步提交）。
             options: [
                 "api_path": "/v2/chat/completions"
             ]
