@@ -1,0 +1,78 @@
+name: Release macOS
+
+# 打 v*-macos tag 即自动构建双架构安装包并发布 GitHub Release。
+# 手动触发请用 build-macos-release.yml（只上传 artifact，不建 Release）。
+on:
+  push:
+    tags:
+      - "v*-macos"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }} package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-26
+          - arch: x86_64
+            runner: macos-26-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: tools/mitm_proxy/go.sum
+
+      - name: Install XcodeGen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Build ${{ matrix.arch }} DMG and ZIP
+        run: bash scripts/build_macos_arch.sh ${{ matrix.arch }}
+
+      - name: Upload ${{ matrix.arch }} artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.arch }}
+          path: |
+            build_output/*-macos_${{ matrix.arch }}.dmg
+            build_output/*-macos_${{ matrix.arch }}.zip
+            build_output/SHA256SUMS-${{ matrix.arch }}.txt
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (release notes)
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: pkg-*
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: AntigravityProxyLauncher ${{ github.ref_name }} For MacOS_x86_64/arm64
+          body_path: release-notes/${{ github.ref_name }}.md
+          files: dist/*
+          fail_on_unmatched_files: true
