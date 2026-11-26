@@ -43,15 +43,19 @@ type RoutingRule struct {
 	TargetProviderID   string `json:"target_provider_id"`
 	Enabled            bool   `json:"enabled"`
 	Priority           int    `json:"priority,omitempty"`
+	// Options carries per-rule knobs. The context-window keys
+	// ("context_window", "max_output_tokens") make the client's model catalog
+	// advertise the routed model's real window; see handler/model_window.go.
+	Options map[string]string `json:"options,omitempty"`
 }
 
 // LLMRouterRule defines a keyword-based routing rule within the LLMRouter.
 type LLMRouterRule struct {
-	Keywords        []string `json:"keywords"`
-	MatchMode       string   `json:"match_mode,omitempty"` // "any" (default) or "all"
-	TargetModel     string   `json:"target_model"`
-	TargetProviderID string  `json:"target_provider_id"`
-	Enabled         bool     `json:"enabled"`
+	Keywords         []string `json:"keywords"`
+	MatchMode        string   `json:"match_mode,omitempty"` // "any" (default) or "all"
+	TargetModel      string   `json:"target_model"`
+	TargetProviderID string   `json:"target_provider_id"`
+	Enabled          bool     `json:"enabled"`
 }
 
 // LLMRouterConfig holds the LLMRouter configuration.
@@ -67,10 +71,10 @@ type LLMRouterConfig struct {
 
 // ModelRouting holds the complete routing configuration.
 type ModelRouting struct {
-	Version    string          `json:"version"`
-	Providers  []ProviderEntry `json:"providers"`
-	Rules      []RoutingRule   `json:"routing_rules"`
-	LLMRouter  *LLMRouterConfig `json:"llm_router,omitempty"`
+	Version   string           `json:"version"`
+	Providers []ProviderEntry  `json:"providers"`
+	Rules     []RoutingRule    `json:"routing_rules"`
+	LLMRouter *LLMRouterConfig `json:"llm_router,omitempty"`
 }
 
 // RoutingConfig holds routing rules and provider entries for handler usage.
