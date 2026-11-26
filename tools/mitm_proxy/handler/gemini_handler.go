@@ -68,7 +68,9 @@ func (h *GeminiHandler) Match(req *http.Request) bool {
 }
 
 func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-	// Fast bypass for non-POST requests (GET / HEAD / OPTIONS) — AI generation is always POST
+	// Fast bypass for non-POST requests (GET / HEAD / OPTIONS) — AI generation is
+	// always POST. fetchAvailableModels is exempt: it is cached and served here
+	// with the model windows rewritten for routed models.
 	if r.Method != http.MethodPost && !strings.Contains(r.URL.Path, "fetchAvailableModels") {
 		return r, nil
 	}
@@ -225,7 +227,10 @@ func (h *GeminiHandler) geminiPassthrough(r *http.Request, ctx *goproxy.ProxyCtx
 		log.Printf("[Gemini] Failed to read passthrough body: %v", err)
 		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Failed to read request body")
 	}
-	return passthroughWithRetry("Gemini", r, bodyBytes, ctx, passthroughMaxRetries)
+	_, resp := passthroughWithRetry("Gemini", r, bodyBytes, ctx, passthroughMaxRetries)
+	// Diagnostic only; inert unless ~/.config/antigravity/dump_rpc exists.
+	dumpAuxRpcIfRequested(r.URL.Path, resp)
+	return r, resp
 }
 
 func isNonModelRpc(path string) bool {
@@ -267,6 +272,13 @@ func (h *GeminiHandler) handleFetchAvailableModels(r *http.Request, ctx *goproxy
 		respHeader := cloneHeader(h.modelsCache.header)
 		age := time.Since(h.modelsCache.updatedAt).Round(time.Second)
 		h.modelsCache.mu.RUnlock()
+
+		// The cache keeps the upstream body verbatim; window overrides are applied
+		// per response so a routing-config change takes effect without waiting for
+		// the cache to expire.
+		cachedBody = h.applyModelWindowOverrides(cachedBody)
+		respHeader.Del("Content-Encoding")
+		respHeader.Set("Content-Length", strconv.Itoa(len(cachedBody)))
 
 		if os.Getenv("MITM_DEBUG") == "true" {
 			log.Printf("[Gemini] fetchAvailableModels: served from cache (%d bytes, age: %v)", len(cachedBody), age)
@@ -347,9 +359,14 @@ func (h *GeminiHandler) handleFetchAvailableModels(r *http.Request, ctx *goproxy
 		log.Printf("[Gemini] fetchAvailableModels models refreshed (no changes)")
 	}
 
+	// Advertise the window of the model that actually answers, not the built-in
+	// one, so the client's checkpoint budget matches the routed backend.
+	servedBody := h.applyModelWindowOverrides(bodyBytes)
+
 	resp.Header.Del("Content-Encoding")
-	resp.ContentLength = int64(len(bodyBytes))
-	resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	resp.ContentLength = int64(len(servedBody))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(servedBody)))
+	resp.Body = io.NopCloser(bytes.NewBuffer(servedBody))
 	return r, resp
 }
 

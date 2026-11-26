@@ -188,6 +188,10 @@ struct ModelRoutingConfig: Codable, Equatable {
         var targetProviderID: String?
         var targetModel: String?
         var enabled: Bool = true
+        /// 透传给 Go 代理的每规则参数（例如 context_window / max_output_tokens，
+        /// 用来把客户端看到的上下文窗口对齐到实际承载该请求的模型）。
+        /// 必须参与 Codable 往返，否则 UI 保存会把该字段抹掉。
+        var options: [String: String]? = nil
 
         enum CodingKeys: String, CodingKey {
             case id
@@ -197,6 +201,7 @@ struct ModelRoutingConfig: Codable, Equatable {
             case targetProviderID = "target_provider_id"
             case targetModel = "target_model"
             case enabled
+            case options
         }
     }
 

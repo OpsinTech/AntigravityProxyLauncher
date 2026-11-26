@@ -126,7 +126,7 @@ struct ModelRoutingView: View {
                     icon: "arrow.left.arrow.right",
                     accentColor: .orange,
                     title: "模型路由映射规则",
-                    description: "配置需要转译的源模型，选择目标服务商和模型。规则存在即生效，删除即停止映射。",
+                    description: "配置需要转译的源模型，选择目标服务商和模型；「上下文窗口 / 最大输出」填目标模型的真实值，代理会据此改写模型目录，让客户端按真实窗口压缩上下文（留空则沿用内置窗口，小模型可能永远不触发压缩）。规则存在即生效，删除即停止映射。",
                     badgeText: "\(rulesCount) 条规则",
                     isExpanded: $isRoutingRulesExpanded
                 ) {
@@ -149,6 +149,18 @@ struct ModelRoutingView: View {
                                 .bold()
                                 .foregroundStyle(.secondary)
                                 .frame(width: 170, alignment: .leading)
+                            Text("上下文窗口")
+                                .font(.caption)
+                                .bold()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 96, alignment: .leading)
+                                .help("客户端按这个窗口排布上下文并决定何时压缩；填目标模型的真实窗口，留空沿用内置值")
+                            Text("最大输出")
+                                .font(.caption)
+                                .bold()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 84, alignment: .leading)
+                                .help("客户端给输出留的 token 额度；留空沿用内置值")
                             Spacer().frame(width: 24)
                         }
                         .padding(.horizontal, 8)
@@ -1065,7 +1077,13 @@ struct RoutingRuleRow: View {
                     return rule.targetProviderID ?? ""
                 },
                 set: { newID in
-                    rule.targetProviderID = newID.isEmpty ? nil : newID
+                    let normalized = newID.isEmpty ? nil : newID
+                    // 换服务商等于换了后端模型：旧的窗口/输出一律作废（内置 Gemini 同样适用，
+                    // 它本来就不启用自定义窗口）。
+                    if normalized != rule.targetProviderID {
+                        rule.options = nil
+                    }
+                    rule.targetProviderID = normalized
                     if newID == LLMRouterProviderID {
                         rule.targetModel = nil
                     } else if let provider = allProviders.first(where: { $0.id == newID && $0.enabled }),
@@ -1095,7 +1113,15 @@ struct RoutingRuleRow: View {
                let provider = allProviders.first(where: { $0.id == pid && $0.enabled }) {
                 Picker("模型", selection: Binding(
                     get: { rule.targetModel ?? "" },
-                    set: { rule.targetModel = $0.isEmpty ? nil : $0 }
+                    // 换了目标模型就把窗口/输出重置：沿用上一条模型的窗口是"看起来配了、
+                    // 实际错配"的最坏状态，宁可让用户按新模型重填。
+                    set: { newValue in
+                        let normalized = newValue.isEmpty ? nil : newValue
+                        if normalized != rule.targetModel {
+                            rule.options = nil
+                        }
+                        rule.targetModel = normalized
+                    }
                 )) {
                     Text("选择模型").tag("")
                     ForEach(provider.models, id: \.self) { m in
@@ -1108,6 +1134,26 @@ struct RoutingRuleRow: View {
                 Spacer().frame(width: 170)
             }
 
+            // 上下文窗口对齐：写进规则 options，由 Go 代理改写模型目录里的
+            // maxTokens / maxOutputTokens，让客户端认知的窗口等于实际上游模型的窗口。
+            TextField("如 128000", text: contextWindowBinding)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .frame(width: 96)
+                .disabled(rule.targetProviderID == nil || rule.targetProviderID == GeminiBuiltinProviderID)
+                .help(rule.targetProviderID == GeminiBuiltinProviderID
+                      ? "内置 Gemini 模型不启用自定义窗口（保持官方窗口）"
+                      : "目标模型的真实上下文窗口（token）。留空 = 沿用内置窗口，压缩可能永远不触发；LLM Router 规则请按可能命中的最小窗口填")
+
+            TextField("如 8192", text: maxOutputTokensBinding)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .frame(width: 84)
+                .disabled(rule.targetProviderID == nil || rule.targetProviderID == GeminiBuiltinProviderID)
+                .help(rule.targetProviderID == GeminiBuiltinProviderID
+                      ? "内置 Gemini 模型不启用自定义窗口（保持官方值）"
+                      : "目标模型的单次最大输出 token。留空 = 沿用内置值")
+
             Button(action: onDelete) {
                 Image(systemName: "xmark.circle.fill")
             }
@@ -1117,6 +1163,39 @@ struct RoutingRuleRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
+    }
+
+    // MARK: - 窗口对齐（RoutingRule.options）
+
+    /// `context_window` / `max_output_tokens` 只收数字；清空即从 options 里移除，
+    /// 两个都空时把 options 置回 nil，保持 JSON 干净。
+    private var contextWindowBinding: Binding<String> {
+        optionBinding(key: OptionKey.contextWindow)
+    }
+
+    private var maxOutputTokensBinding: Binding<String> {
+        optionBinding(key: OptionKey.maxOutputTokens)
+    }
+
+    private enum OptionKey {
+        static let contextWindow = "context_window"
+        static let maxOutputTokens = "max_output_tokens"
+    }
+
+    private func optionBinding(key: String) -> Binding<String> {
+        Binding(
+            get: { rule.options?[key] ?? "" },
+            set: { newValue in
+                var options = rule.options ?? [:]
+                let digits = newValue.filter(\.isNumber)
+                if digits.isEmpty {
+                    options.removeValue(forKey: key)
+                } else {
+                    options[key] = digits
+                }
+                rule.options = options.isEmpty ? nil : options
+            }
+        )
     }
 }
 
