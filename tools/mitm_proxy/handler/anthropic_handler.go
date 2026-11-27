@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/config"
@@ -21,13 +22,13 @@ import (
 type AnthropicHandler struct {
 	providerRegistry   *provider.Registry
 	translatorRegistry *translator.Registry
-	routingConfig      *config.RoutingConfig
+	routingConfig      *atomic.Pointer[config.RoutingConfig]
 }
 
 func NewAnthropicHandler(
 	providerRegistry *provider.Registry,
 	translatorRegistry *translator.Registry,
-	routingConfig *config.RoutingConfig,
+	routingConfig *atomic.Pointer[config.RoutingConfig],
 ) *AnthropicHandler {
 	return &AnthropicHandler{
 		providerRegistry:   providerRegistry,
@@ -70,18 +71,21 @@ func (h *AnthropicHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http
 
 	log.Printf("[Anthropic] Detected model: %s", modelDetect.Model)
 
-	rule := h.routingConfig.FindMatchingRule(modelDetect.Model, "anthropic")
+	// 请求内只取一次快照：若中途发生 SIGHUP，避免同一个请求混用新旧两份配置。
+	rc := h.rc()
+
+	rule := rc.FindMatchingRule(modelDetect.Model, "anthropic")
 	if rule == nil {
 		// Fallback: match rules without source_type restriction (wildcard)
-		rule = h.routingConfig.FindMatchingRule(modelDetect.Model, "")
+		rule = rc.FindMatchingRule(modelDetect.Model, "")
 	}
 
 	var targetProviderID, targetModel string
 	if rule != nil {
-		targetProviderID, targetModel = h.routingConfig.ResolveLLMRouterTarget(rule, bodyBytes, "anthropic")
+		targetProviderID, targetModel = rc.ResolveLLMRouterTarget(rule, bodyBytes, "anthropic")
 	} else {
 		// Direct model match: check if requested model matches any enabled provider's model
-		for _, p := range h.routingConfig.Providers {
+		for _, p := range rc.Providers {
 			if !p.Enabled {
 				continue
 			}
@@ -106,7 +110,7 @@ func (h *AnthropicHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http
 
 	// Local model servers (ollama / vllm / llama.cpp) often need no API key,
 	// so only a missing provider entry blocks routing here.
-	providerConfig := h.routingConfig.GetProvider(targetProviderID)
+	providerConfig := rc.GetProvider(targetProviderID)
 	if providerConfig == nil {
 		log.Printf("[Anthropic] Provider not configured: %s", targetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
@@ -270,4 +274,11 @@ func newMsgID() string {
 	b := make([]byte, 12)
 	rand.Read(b)
 	return "msg_" + hex.EncodeToString(b)
+}
+
+
+// rc 返回当前路由配置快照。SIGHUP 热重载会原子替换指针，
+// 因此每次请求都重新 Load，避免一直持着旧配置。
+func (h *AnthropicHandler) rc() *config.RoutingConfig {
+	return h.routingConfig.Load()
 }

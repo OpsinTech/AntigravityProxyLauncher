@@ -65,6 +65,84 @@ struct LauncherDoctor {
         }
     }
 
+    /// 逐个目标（Antigravity / IDE / Gemini / agy）跑一遍健康检查。
+    /// 对应「切换 tab 就提示需要修复」这类问题：单个目标看起来正常，
+    /// 但换到另一个目标才暴露，必须一次性全查。
+    func verifyAllTargetsFromCLI() -> Int32 {
+        let saved = FileSystemPaths.activeApp
+        defer { FileSystemPaths.activeApp = saved }
+
+        var failed: [String] = []
+        let health = PatchedAppHealthService()
+
+        for app in TargetApp.allCases {
+            FileSystemPaths.activeApp = app
+            // 目标 App 根本没装：跳过，不算失败（否则每次全量检查都会红一片）。
+            guard let info = AppDetectionService().detectInstalledTargetApp() else {
+                let name = app.rawValue.padding(toLength: 16, withPad: " ", startingAt: 0)
+                print("\(name) 未安装（已跳过）")
+                continue
+            }
+            let version = info.version
+            let verdict: String
+            switch health.evaluate(targetVersion: version) {
+            case .missing:
+                verdict = "已安装但未修复 (missing)"
+                failed.append(app.rawValue)
+            case .ready:
+                verdict = "就绪 (ready)"
+            case .outdated:
+                verdict = "版本过期 (outdated)"
+                failed.append(app.rawValue)
+            case .repairRequired(let message):
+                verdict = "需要修复: \(message)"
+                failed.append(app.rawValue)
+            }
+            let name = app.rawValue.padding(toLength: 16, withPad: " ", startingAt: 0)
+            print("\(name) v\(version.padding(toLength: 18, withPad: " ", startingAt: 0)) \(verdict)")
+        }
+
+        FileSystemPaths.activeApp = saved
+        if failed.isEmpty {
+            print("全部目标验证通过")
+            return LauncherErrorCode.success.rawValue
+        }
+        print("以下目标未通过: \(failed.joined(separator: ", "))")
+        return LauncherErrorCode.verifyFailed.rawValue
+    }
+
+    /// 按磁盘上的最新配置重启网关（等价于设置页「重启网关」）。
+    /// 托管模式下会重建 LaunchAgent plist，因此上游代理变更是真正生效的。
+    ///
+    /// 注意：`ProxyManager.restartProxy` 的收尾工作在 main queue 上，
+    /// 而 CLI 进程默认没有 main run loop —— 必须 dispatchMain() 才会执行。
+    func restartGatewayFromCLI() -> Int32 {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let finished = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async {
+                ProxyManager.shared.restartProxy(reason: "CLI --restart-gateway") {
+                    finished.signal()
+                }
+            }
+
+            let waitResult = finished.wait(timeout: .now() + 30)
+            guard waitResult != .timedOut else {
+                print("重启网关超时")
+                Darwin.exit(LauncherErrorCode.launchFailed.rawValue)
+            }
+
+            // 进程起来到真正 bind 有一小段间隔，稍等再探端口。
+            Thread.sleep(forTimeInterval: 2)
+            if MitmProxyService.isPortListening() {
+                print("网关已重启，127.0.0.1:\(MitmProxyService.port) 监听正常")
+                Darwin.exit(LauncherErrorCode.success.rawValue)
+            }
+            print("网关重启后未监听 127.0.0.1:\(MitmProxyService.port)")
+            Darwin.exit(LauncherErrorCode.launchFailed.rawValue)
+        }
+        dispatchMain()
+    }
+
     func patchAndLaunchFromCLI() -> Int32 {
         print("=== Antigravity Proxy Launcher CLI Patch Workflow ===")
 

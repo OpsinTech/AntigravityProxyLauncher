@@ -48,3 +48,10 @@ AntigravityTun/
 # Local build artifacts (CLI builds with redirected DerivedData)
 .derived_data/
 .toolchain/
+
+# Launcher local build output (xcodebuild 产物，不入库)
+launcher/build/
+
+# sni_redirect 编译产物（由 scripts/build_universal.sh 现场构建）
+tools/sni_redirect/sni_redirect
+tools/sni_redirect/sni_redirect.exe

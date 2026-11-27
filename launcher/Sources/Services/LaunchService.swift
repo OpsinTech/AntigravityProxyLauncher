@@ -81,6 +81,15 @@ final class LaunchService {
 
         try? clearQuarantineAttributes()
 
+        // 启动前对齐 FakeIP 策略：历史版本把「是否需要 FakeIP」放在全局开关上，
+        // 导致多应用共存时互相踩。现在改成按进程排除，这里保证配置与当前目标一致，
+        // 用户直接点「启动」（不走修复）也不会拿到过期的配置。
+        if FileSystemPaths.activeApp == .gemini {
+            try? FakeIPBypassService.applyForGemini()
+        } else {
+            try? FakeIPBypassService.applyForTunnelApps()
+        }
+
         let config = NSWorkspace.OpenConfiguration()
         let activeApp = FileSystemPaths.activeApp
         config.arguments = activeApp.launchArguments

@@ -7,6 +7,15 @@ struct SettingsView: View {
     @State private var revealGithubToken = false
     @State private var isTestingCredentials = false
     @State private var credentialTestResult: String?
+    private let proxyManager = ProxyManager.shared
+
+    /// 缓存的网关状态。不能直接用 ProxyManager.gatewayState：它内部同步 spawn
+    /// launchctl，放在 body 里会让每次重绘都跑好几个子进程。
+    @State private var gatewayState: ProxyManager.GatewayState = .stopped
+
+    private func refreshGatewayState() {
+        proxyManager.gatewayStateAsync { gatewayState = $0 }
+    }
 
     var body: some View {
         ScrollView {
@@ -43,6 +52,65 @@ struct SettingsView: View {
 
                         Text("说明：隐藏后需重启应用生效，应用仅显示在菜单栏中。")
                             .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(20)
+                    .background(Color.gray.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+                    )
+
+                    // 本地网关卡片
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            Image(systemName: "network.badge.shield.half.filled")
+                                .foregroundStyle(.indigo)
+                            Text("本地网关 (18081)")
+                                .font(.headline)
+                        }
+                        Divider()
+
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(gatewayState.isRunning ? Color.green : Color.secondary)
+                                .frame(width: 8, height: 8)
+                            Text(gatewayState.label)
+                                .font(.subheadline)
+                            Spacer()
+                        }
+
+                        Text("Antigravity / IDE 中由 Go 写成的组件（language_server、agy）只能通过该网关代理。关闭网关后 AI 功能不可用，网页与其它网络不受影响。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Toggle("退出 Launcher 后保留网关（继续对外提供模型服务）",
+                               isOn: $appState.settingsDraft.keepGatewayAlive)
+                            .toggleStyle(.switch)
+
+                        Text(appState.settingsDraft.keepGatewayAlive
+                             ? "勾选：网关交给 launchd 常驻，退出 Launcher、崩溃、重启都不影响，可继续给本机其它工具提供 127.0.0.1:18081 的模型服务。"
+                             : "不勾选：网关随 Launcher 一起停止，不占用后台；LaunchAgent 配置保留，下次打开 Launcher 会自动拉起。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        HStack(spacing: 10) {
+                            Button("重启网关") {
+                                proxyManager.restartGatewayManually()
+                                // 等异步重启完成再取状态，否则会先显示旧值。
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                    refreshGatewayState()
+                                }
+                            }
+                            .disabled(!gatewayState.isRunning)
+
+                            Spacer()
+                        }
+                        .buttonStyle(.bordered)
+
+                        Text("网关是应用的组成部分，随 Launcher 安装与启动；这里只提供手动重启（改了上游代理等设置后想立即生效时可点）。")
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     .padding(20)
@@ -267,7 +335,11 @@ struct SettingsView: View {
                             }
                             .secondaryActionStyle()
                             
-                            Button(action: { appState.saveSettings() }) {
+                            Button(action: {
+                                appState.saveSettings()
+                                // RunAtLoad / KeepAlive 只在 bootstrap 时读取，改完要重载网关
+                                ProxyManager.shared.applyGatewayPolicy()
+                            }) {
                                 ButtonLabel(icon: "square.and.arrow.down", text: "保存并应用")
                             }
                             .primaryActionStyle()
@@ -299,6 +371,7 @@ struct SettingsView: View {
         }
         .onAppear {
             appState.loadSettings()
+            refreshGatewayState()
         }
         .animation(.easeInOut(duration: 0.25), value: credentialTestResult)
     }

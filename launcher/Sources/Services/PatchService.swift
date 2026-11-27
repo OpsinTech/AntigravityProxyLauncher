@@ -77,12 +77,14 @@ final class PatchService {
             try embedRuntimeAssets()
             report("写入 Info.plist", onProgress: onProgress)
             try rewriteInfoPlist()
-            report("写入 patch 元数据", onProgress: onProgress)
-            try persistPatchMetadata()
             report("签名前 preflight 检查", onProgress: onProgress)
             try signingService.preflight()
             report("执行 inside-out 重签名", onProgress: onProgress)
             try resignBundle(onProgress: onProgress)
+            // 元数据要在签名之后写：codesign 会改写 dylib 内容，签名前记录的校验值
+            // 与最终文件永远对不上，健康检查就会一直报「需要修复」。
+            report("写入 patch 元数据", onProgress: onProgress)
+            try persistPatchMetadata()
             
             // 修复完成后自动清理隔离属性，避免 Gatekeeper 提示
             report("清理修复包隔离属性 (xattr)", onProgress: onProgress)
@@ -92,6 +94,24 @@ final class PatchService {
             if FileSystemPaths.activeApp == .gemini {
                 report("配置 Gemini 特殊权限", onProgress: onProgress)
                 try configureGeminiSpecialPermissions()
+
+                // Gemini 用 Network.framework 在框架内部建连，dylib 的 connect hook 拦不到，
+                // 只能把域名解析到 127.0.0.1 再由本地 SNI 分流器接管。缺了这一步，
+                // 应用能开窗口但所有 Google 请求都会 code=14。
+                report("安装本地 SNI 分流器", onProgress: onProgress)
+                do {
+                    try SNIRedirectService().installIfNeeded { [weak self] msg in
+                        self?.report(msg, onProgress: onProgress)
+                    }
+                } catch {
+                    report("⚠️ SNI 分流器未就绪：\(error.localizedDescription)", onProgress: onProgress)
+                }
+            } else {
+                // 其它 App（Antigravity 系列）依赖 FakeIP 做域名级隧道。
+                // 注意：这里只确保 FakeIP 开启，绝不清理排除名单 —— 否则会顺手
+                // 删掉 Gemini 的排除项，让 Gemini 重新掉回 code=14。
+                report("确认 FakeIP 隧道配置", onProgress: onProgress)
+                try? FakeIPBypassService.applyForTunnelApps()
             }
         } catch {
             report("检测到失败，执行自动回滚", onProgress: onProgress)
@@ -243,8 +263,12 @@ final class PatchService {
             # ignore DYLD_INSERT_LIBRARIES, silently killing the tun injection.
             \(wrapperEnvExports)
 
-            # Clean up terminal proxy environment variables that conflict with dylib tun
-            unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy
+            # Go 组件只认环境变量（DYLD 注入对它无效），所以不能把代理清空了事：
+            # 清掉终端里来源不明的设置后，统一指向本地 MITM 网关 18081。
+            unset ALL_PROXY all_proxy
+            export HTTPS_PROXY="http://127.0.0.1:18081"
+            export HTTP_PROXY="http://127.0.0.1:18081"
+            export NO_PROXY="127.0.0.1,localhost"
 
             # Self-heal: if the real binary was replaced behind our back (manual update,
             # or an updater that ignored the switch above), re-apply our ad-hoc signature
@@ -336,8 +360,8 @@ final class PatchService {
         let dylibSource = try resolveDylibSource()
         try copyFileReplacingExisting(from: dylibSource, to: dylibDestination)
 
-        // Keep helper processes portable: each Helper resolves @executable_path/../Resources
-        // relative to its own bundle, so we mirror the dylib into helper Resources.
+        // 辅助副本：注入本身走主包绝对路径（见 rewriteInfoPlist），这里额外把 dylib
+        // 镜像进各 Helper 的 Resources，兼容历史上按相对路径解析的 helper 与手动排查。
         for helperResourceDir in helperResourceDirectories() {
             try fm.createDirectory(at: helperResourceDir, withIntermediateDirectories: true)
             try copyFileReplacingExisting(
@@ -354,10 +378,32 @@ final class PatchService {
         }
 
         dict["SUEnableAutomaticChecks"] = false
-        dict["LSEnvironment"] = [
-            "DYLD_INSERT_LIBRARIES": "@executable_path/../Resources/libAntigravityTun.dylib",
+        // 必须写绝对路径：`@executable_path/../Resources/...` 只在主可执行文件的
+        // 层级成立。helper 进程（GeminiAppLauncher、Electron Helper、language_server）
+        // 继承 DYLD_INSERT_LIBRARIES 后会把路径拼成
+        // `.../Contents/Resources/Resources/libAntigravityTun.dylib`，dyld 找不到库
+        // 就 abort —— 用户看到的就是「点开没窗口、后台日志里子进程反复崩溃」。
+        let dylibPath = FileSystemPaths.patchedApp
+            .appendingPathComponent("Contents/Resources/libAntigravityTun.dylib")
+            .path
+        var launchEnvironment: [String: String] = [
+            "DYLD_INSERT_LIBRARIES": dylibPath,
             "ANTIGRAVITY_CONFIG": FileSystemPaths.userProxyConfigFile.path
         ]
+
+        // Electron 目标会拉起 Go 写的组件（language_server、内置 agy），这些程序
+        // 是 hardened runtime 的 Google 签名二进制，DYLD 注入不进去，只认环境变量。
+        // 写进 Info.plist 才能保证「从 Dock 直接双击」也带上代理，而不只是经由
+        // Launcher 启动时才正常。
+        if FileSystemPaths.activeApp == .antigravity || FileSystemPaths.activeApp == .antigravityIDE {
+            launchEnvironment["HTTPS_PROXY"] = "http://127.0.0.1:18081"
+            launchEnvironment["HTTP_PROXY"] = "http://127.0.0.1:18081"
+            launchEnvironment["NO_PROXY"] = "127.0.0.1,localhost"
+            launchEnvironment["SSL_CERT_FILE"] = FileSystemPaths.combinedCAFile.path
+            launchEnvironment["NODE_EXTRA_CA_CERTS"] = FileSystemPaths.goproxyCAFile.path
+        }
+
+        dict["LSEnvironment"] = launchEnvironment
 
         let nsDict = dict as NSDictionary
         if !nsDict.write(to: infoURL, atomically: true) {
@@ -393,7 +439,19 @@ final class PatchService {
     private func configureGeminiSpecialPermissions() throws {
         let appPath = FileSystemPaths.patchedApp.path
         let bundleID = FileSystemPaths.activeApp.bundleIdentifier
-        
+
+        // 0. Gemini 的 gRPC 传输层走 Network.framework，其 connect() 发生在 dyld
+        //    共享缓存内部，DYLD_INTERPOSE(my_connect, connect) 拦不到。若 dylib 仍然把
+        //    域名解析成 FakeIP，这些连接会直接拨 198.18.x.x —— 该网段又被 mihomo TUN
+        //    的 `IP-CIDR,198.18.0.0/15,DIRECT` 规则吞掉，于是连接秒失败，网络层报
+        //    iRPC code=14 (UNAVAILABLE)，App 卡在 isRecoveringFromError、窗口不显示。
+        //    现行方案：把 Gemini 的域名解析到本地回环（fake_ip.bypass_cidr，默认
+        //    127.0.0.1/32），再由 root 的 sni_redirect 守护进程按 TLS SNI 还原目标域名、
+        //    经上游 SOCKS5 做纯隧道转发。所以这里把 Gemini 排除出 FakeIP 名单，
+        //    而不是让它走真实地址。
+        try FakeIPBypassService.applyForGemini()
+        report("已将 Gemini 加入 FakeIP 排除名单（不影响 Antigravity / CLI）", onProgress: nil)
+
         // 1. 重置 TCC 权限数据库中的旧记录，避免冲突
         _ = try? CommandRunner.run("/usr/bin/tccutil", ["reset", "All", bundleID])
         _ = try? CommandRunner.run("/usr/bin/tccutil", ["reset", "All", "com.google.GeminiMacOS"])
@@ -500,14 +558,18 @@ final class PatchService {
             appVersion = detectInstalledTargetApp()?.version ?? "unknown"
         }
 
-        // Compute real checksums for integrity verification
+        // Compute real checksums for integrity verification.
+        // 必须按目标类型取对应文件：之前无条件先读 CLI 的 dylib，导致所有 App Bundle
+        // 目标记录的都是 CLI 那份的校验值，健康检查每次比对都判为漂移 → 无限要求修复。
         let dylibChecksum: String = {
-            if let data = try? Data(contentsOf: FileSystemPaths.patchedCLIDylib) {
-                return SHA256.hash(data: data).compactMap { String(format: "%02x", $0) }.joined()
+            let dylibPath: URL
+            switch FileSystemPaths.activeApp.targetType {
+            case .cliBinary:
+                dylibPath = FileSystemPaths.patchedCLIDylib
+            case .appBundle:
+                dylibPath = FileSystemPaths.patchedApp
+                    .appendingPathComponent("Contents/Resources/libAntigravityTun.dylib")
             }
-            // For App Bundle, dylib is inside the bundle
-            let dylibPath = FileSystemPaths.patchedApp
-                .appendingPathComponent("Contents/Resources/libAntigravityTun.dylib")
             if let data = try? Data(contentsOf: dylibPath) {
                 return SHA256.hash(data: data).compactMap { String(format: "%02x", $0) }.joined()
             }

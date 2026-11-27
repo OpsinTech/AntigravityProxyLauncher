@@ -6,6 +6,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")/../launcher" && pwd)"
 DYLIB_DIR="$(cd "$(dirname "$0")/../AntigravityTun" && pwd)"
 OUTPUT_DIR="$(cd "$(dirname "$0")/../build_output" && pwd)"
 APP_NAME="AntigravityProxyLauncher"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION=$(cat "$(dirname "$0")/../launcher/Resources/version.txt" | tr -d '[:space:]')
 DERIVED_BASE="$HOME/Library/Developer/Xcode/DerivedData"
 
@@ -41,12 +42,22 @@ echo "  Dylib: $(lipo -info "$DYLIB_SRC" | head -1)"
 # --- Step 1.5: Build Go Proxy ---
 echo "[1.5/5] Building Go MITM Proxy (universal)..."
 PROXY_DIR="$PROJECT_DIR/../tools/mitm_proxy"
+SNI_DIR="$PROJECT_DIR/../tools/sni_redirect"
 cd "$PROXY_DIR"
 GOOS=darwin GOARCH=arm64 go build -o mitm_proxy_arm64 .
 GOOS=darwin GOARCH=amd64 go build -o mitm_proxy_x86_64 .
 lipo -create mitm_proxy_arm64 mitm_proxy_x86_64 -output mitm_proxy
 rm mitm_proxy_arm64 mitm_proxy_x86_64
 echo "  Proxy: $(lipo -info mitm_proxy | head -1)"
+
+# local SNI redirector: 原生 Swift/Network.framework 应用的接管点（root daemon）
+echo "[1.5/5] Building sni_redirect (universal)..."
+cd "$SNI_DIR"
+GOOS=darwin GOARCH=arm64 go build -o sni_redirect_arm64 . 
+GOOS=darwin GOARCH=amd64 go build -o sni_redirect_x86_64 . 
+lipo -create sni_redirect_arm64 sni_redirect_x86_64 -output sni_redirect
+rm sni_redirect_arm64 sni_redirect_x86_64
+echo "  SNI redirect: $(lipo -info sni_redirect | head -1)"
 
 # --- Step 2: Build app for arm64 ---
 echo "[2/5] Building app for arm64..."
@@ -94,7 +105,12 @@ done
 
 # Update the bundled resources
 cp "$DYLIB_SRC" "$UNIVERSAL_APP/Contents/Resources/libAntigravityTun.dylib"
+# 同步仓库内的副本：CLI target 与 swift build 都靠 FileSystemPaths.bundledDylib
+# 回退到这个路径，长期不同步会让 --verify-all 把健康的包判成「dylib 漂移」。
+cp "$DYLIB_SRC" "$REPO_ROOT/launcher/Resources/libAntigravityTun.dylib"
 cp "$PROXY_DIR/mitm_proxy" "$UNIVERSAL_APP/Contents/Resources/mitm_proxy"
+cp "$SNI_DIR/sni_redirect" "$UNIVERSAL_APP/Contents/Resources/sni_redirect"
+chmod +x "$UNIVERSAL_APP/Contents/Resources/sni_redirect"
 cp "$PROXY_DIR/.env" "$UNIVERSAL_APP/Contents/Resources/.env"
 
 # --- Step 5: Package ---

@@ -509,6 +509,28 @@ struct ModelRoutingView: View {
 
         errorMessage = nil
         statusMessage = nil
+
+        // 优先热重载：网关收到 SIGHUP 后原地重建 provider 与路由规则，
+        // 正在进行的 SSE 流不会被切断，也不需要 1~2 秒的端口空窗。
+        if ProxyManager.shared.reloadGatewayRouting() {
+            isRestarting = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                let ok = ProxyManager.shared.healthCheck()
+                isRestarting = false
+                if ok {
+                    statusMessage = "路由规则已保存，网关已热重载生效（未重启）。"
+                } else {
+                    errorMessage = "热重载后健康检查失败，请检查端口 18081。"
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                    statusMessage = nil
+                    errorMessage = nil
+                }
+            }
+            return
+        }
+
+        // 退路：网关没在跑时回到重启流程。
         isRestarting = true
         ProxyManager.shared.restartProxy(reason: "routing rules saved") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {

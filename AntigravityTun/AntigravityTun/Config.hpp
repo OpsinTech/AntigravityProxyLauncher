@@ -24,6 +24,13 @@ struct ProxyConfig {
 struct FakeIPConfig {
   bool enabled = true;
   std::string cidr = "198.18.0.0/15";
+  // 可执行路径命中这些子串的进程跳过 FakeIP 改写。
+  // 用于链接 Network.framework 的原生 App（如 Gemini）：它的 connect() 发生在
+  // dyld 共享缓存内部，拦截不到，FakeIP 只会让连接拨一个不存在的地址。
+  std::vector<std::string> excludeProcesses;
+  // 被排除进程的域名解析到哪个地址。默认本地回环：由本地 SNI 分流器按
+  // ClientHello 的 SNI 还原目标，Network.framework 在框架内部建连也能被接管。
+  std::string bypassCidr = "127.0.0.1/32";
 };
 
 struct MitmConfig {
@@ -99,6 +106,27 @@ public:
   bool trafficLogging = false;
   bool childInjection = true;
   std::vector<std::string> targetProcesses;
+
+  /// 当前进程是否应跳过 FakeIP 改写（不区分大小写的路径子串匹配）
+  bool ShouldBypassFakeIP(const std::string &executablePath) const {
+    if (fakeIp.excludeProcesses.empty())
+      return false;
+
+    std::string lowerPath = executablePath;
+    std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+
+    for (const auto &marker : fakeIp.excludeProcesses) {
+      std::string lowerMarker = marker;
+      std::transform(lowerMarker.begin(), lowerMarker.end(), lowerMarker.begin(),
+                     [](unsigned char c) { return std::tolower(c); });
+      if (!lowerMarker.empty() &&
+          lowerPath.find(lowerMarker) != std::string::npos) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   bool ShouldInject(const std::string &processName) const {
     if (targetProcesses.empty())
@@ -213,6 +241,14 @@ public:
         auto &fip = j["fake_ip"];
         fakeIp.enabled = fip.value("enabled", true);
         fakeIp.cidr = fip.value("cidr", "198.18.0.0/15");
+        fakeIp.bypassCidr = fip.value("bypass_cidr", "127.0.0.1/32");
+        fakeIp.excludeProcesses.clear();
+        if (fip.contains("exclude_processes") && fip["exclude_processes"].is_array()) {
+          for (const auto &item : fip["exclude_processes"]) {
+            if (item.is_string())
+              fakeIp.excludeProcesses.push_back(item.get<std::string>());
+          }
+        }
       }
 
       if (j.contains("mitm")) {

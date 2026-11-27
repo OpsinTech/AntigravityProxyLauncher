@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/config"
@@ -21,13 +22,13 @@ import (
 type OpenAIHandler struct {
 	providerRegistry   *provider.Registry
 	translatorRegistry *translator.Registry
-	routingConfig      *config.RoutingConfig
+	routingConfig      *atomic.Pointer[config.RoutingConfig]
 }
 
 func NewOpenAIHandler(
 	providerRegistry *provider.Registry,
 	translatorRegistry *translator.Registry,
-	routingConfig *config.RoutingConfig,
+	routingConfig *atomic.Pointer[config.RoutingConfig],
 ) *OpenAIHandler {
 	return &OpenAIHandler{
 		providerRegistry:   providerRegistry,
@@ -94,18 +95,21 @@ func (h *OpenAIHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	log.Printf("[OpenAI] Detected model: %s", modelDetect.Model)
 
 	// Find matching routing rule
-	rule := h.routingConfig.FindMatchingRule(modelDetect.Model, "openai")
+	// 请求内只取一次快照：若中途发生 SIGHUP，避免同一个请求混用新旧两份配置。
+	rc := h.rc()
+
+	rule := rc.FindMatchingRule(modelDetect.Model, "openai")
 	if rule == nil {
 		// Fallback: match rules without source_type restriction (wildcard)
-		rule = h.routingConfig.FindMatchingRule(modelDetect.Model, "")
+		rule = rc.FindMatchingRule(modelDetect.Model, "")
 	}
 
 	var targetProviderID, targetModel string
 	if rule != nil {
-		targetProviderID, targetModel = h.routingConfig.ResolveLLMRouterTarget(rule, bodyBytes, "openai")
+		targetProviderID, targetModel = rc.ResolveLLMRouterTarget(rule, bodyBytes, "openai")
 	} else {
 		// Direct model match: check if requested model matches any enabled provider's model (e.g. CodeBuddy's glm-5.2)
-		for _, p := range h.routingConfig.Providers {
+		for _, p := range rc.Providers {
 			if !p.Enabled {
 				continue
 			}
@@ -132,7 +136,7 @@ func (h *OpenAIHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 
 	// Look up provider. Local model servers (ollama / vllm / llama.cpp) often
 	// need no API key, so only a missing provider entry blocks routing here.
-	providerConfig := h.routingConfig.GetProvider(targetProviderID)
+	providerConfig := rc.GetProvider(targetProviderID)
 	if providerConfig == nil {
 		log.Printf("[OpenAI] Provider not configured: %s", targetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
@@ -289,4 +293,11 @@ func (h *OpenAIHandler) handleStreamRequest(
 		Request:       r,
 		ContentLength: -1,
 	}
+}
+
+
+// rc 返回当前路由配置快照。SIGHUP 热重载会原子替换指针，
+// 因此每次请求都重新 Load，避免一直持着旧配置。
+func (h *OpenAIHandler) rc() *config.RoutingConfig {
+	return h.routingConfig.Load()
 }

@@ -80,12 +80,18 @@ struct PatchVerificationService {
             throw PatchVerificationError.dylibMissing(dylibPath)
         }
 
-        let expectedDylibPath = "@executable_path/../Resources/libAntigravityTun.dylib"
         let expectedConfigPath = FileSystemPaths.userProxyConfigFile.path
 
         guard let lsEnvironment = info["LSEnvironment"] as? [String: String],
-              lsEnvironment["DYLD_INSERT_LIBRARIES"] == expectedDylibPath,
+              let injected = lsEnvironment["DYLD_INSERT_LIBRARIES"],
               lsEnvironment["ANTIGRAVITY_CONFIG"] == expectedConfigPath else {
+            throw PatchVerificationError.invalidLSEnvironment
+        }
+
+        // 注入必须是绝对路径且文件真实存在。`@executable_path/../Resources/...` 这种
+        // 相对写法会让 helper 进程（Helper.app、bin/language_server）解析到
+        // .../xxx.app/Contents/Resources/Resources/... 然后 dyld abort。
+        if !injected.hasPrefix("/") || !FileManager.default.fileExists(atPath: injected) {
             throw PatchVerificationError.invalidLSEnvironment
         }
 
@@ -96,17 +102,9 @@ struct PatchVerificationService {
             options: [.skipsHiddenFiles]
         ))?.filter { $0.pathExtension == "app" && $0.lastPathComponent.contains("Helper") } ?? []
 
-        if !helperApps.isEmpty {
-            let helperReady = helperApps.contains { helper in
-                let helperResources = helper.appendingPathComponent("Contents/Resources", isDirectory: true)
-                let helperDylib = helperResources.appendingPathComponent("libAntigravityTun.dylib").path
-                return FileManager.default.fileExists(atPath: helperDylib)
-            }
-
-            if !helperReady {
-                throw PatchVerificationError.invalidLSEnvironment
-            }
-        }
+        // helper 各自是否带 dylib 副本不再作为判据：注入走的是主机绝对路径，
+        // helper 通过 DYLD_INSERT_LIBRARIES 继承即可，无需本地副本。
+        _ = helperApps
 
         let args = ["--verify", "--deep", "--strict", "--verbose=4", appURL.path]
         let commandText = "/usr/bin/codesign " + args.joined(separator: " ")

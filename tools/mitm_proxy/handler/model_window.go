@@ -60,12 +60,12 @@ type modelWindowOverride struct {
 // config. Matching mirrors the request path: exact source_type match first, then
 // a wildcard source_type rule.
 func (h *GeminiHandler) windowOverrideForModel(modelID string) (modelWindowOverride, bool) {
-	if h.routingConfig == nil || strings.TrimSpace(modelID) == "" {
+	if h.rc() == nil || strings.TrimSpace(modelID) == "" {
 		return modelWindowOverride{}, false
 	}
-	rule := h.routingConfig.FindMatchingRule(modelID, "google")
+	rule := h.rc().FindMatchingRule(modelID, "google")
 	if rule == nil {
-		rule = h.routingConfig.FindMatchingRule(modelID, "")
+		rule = h.rc().FindMatchingRule(modelID, "")
 	}
 	if rule == nil {
 		return modelWindowOverride{}, false
@@ -120,7 +120,7 @@ func windowOverrideFromRule(rule *config.RoutingRule) (modelWindowOverride, bool
 // round-tripping. The body is returned unchanged when nothing matched, when it
 // is not a JSON object, or when no override applies.
 func (h *GeminiHandler) applyModelWindowOverrides(body []byte) []byte {
-	if len(body) == 0 || h.routingConfig == nil {
+	if len(body) == 0 || h.rc() == nil {
 		return body
 	}
 
