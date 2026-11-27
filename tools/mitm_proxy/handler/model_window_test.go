@@ -16,7 +16,7 @@ import (
 )
 
 func newWindowHandler(rules []config.RoutingRule) *GeminiHandler {
-	return NewGeminiHandler(provider.NewRegistry(), translator.NewRegistry(), &config.RoutingConfig{Rules: rules})
+	return NewGeminiHandler(provider.NewRegistry(), translator.NewRegistry(), routingPtr(&config.RoutingConfig{Rules: rules}))
 }
 
 // A fetchAvailableModels payload as the client receives it: the window lives in

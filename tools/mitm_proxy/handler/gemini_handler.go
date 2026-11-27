@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/KevinLiangX/AntigravityProxyLauncher/mitm_proxy/config"
@@ -34,14 +35,14 @@ type modelsCache struct {
 type GeminiHandler struct {
 	providerRegistry   *provider.Registry
 	translatorRegistry *translator.Registry
-	routingConfig      *config.RoutingConfig
+	routingConfig      *atomic.Pointer[config.RoutingConfig]
 	modelsCache        *modelsCache
 }
 
 func NewGeminiHandler(
 	providerRegistry *provider.Registry,
 	translatorRegistry *translator.Registry,
-	routingConfig *config.RoutingConfig,
+	routingConfig *atomic.Pointer[config.RoutingConfig],
 ) *GeminiHandler {
 	return &GeminiHandler{
 		providerRegistry:   providerRegistry,
@@ -112,18 +113,21 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 
 	log.Printf("[Gemini] Detected model: %s, searching routing rules...", modelName)
 
-	rule := h.routingConfig.FindMatchingRule(modelName, "google")
+	// 请求内只取一次快照：若中途发生 SIGHUP，避免同一个请求混用新旧两份配置。
+	rc := h.rc()
+
+	rule := rc.FindMatchingRule(modelName, "google")
 	if rule == nil {
 		// Fallback: match rules without source_type restriction (wildcard)
-		rule = h.routingConfig.FindMatchingRule(modelName, "")
+		rule = rc.FindMatchingRule(modelName, "")
 	}
 
 	var targetProviderID, targetModel string
 	if rule != nil {
-		targetProviderID, targetModel = h.routingConfig.ResolveLLMRouterTarget(rule, bodyBytes, "gemini")
+		targetProviderID, targetModel = rc.ResolveLLMRouterTarget(rule, bodyBytes, "gemini")
 	} else {
 		// Direct model match: check if requested model matches any enabled provider's model (e.g. CodeBuddy)
-		for _, p := range h.routingConfig.Providers {
+		for _, p := range rc.Providers {
 			if !p.Enabled {
 				continue
 			}
@@ -178,7 +182,7 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 
 	// Local model servers (ollama / vllm / llama.cpp) often need no API key,
 	// so only a missing provider entry blocks routing here.
-	providerConfig := h.routingConfig.GetProvider(targetProviderID)
+	providerConfig := rc.GetProvider(targetProviderID)
 	if providerConfig == nil {
 		log.Printf("[Gemini] Provider not configured: %s", targetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
@@ -666,4 +670,11 @@ func ensureThoughtSignatures(body []byte) []byte {
 	log.Printf("[Gemini] Injected %s into %d functionCall part(s) lacking thought signature",
 		SentinelThoughtSignature, modifiedCount)
 	return patched
+}
+
+
+// rc 返回当前路由配置快照。SIGHUP 热重载会原子替换指针，
+// 因此每次请求都重新 Load，避免一直持着旧配置。
+func (h *GeminiHandler) rc() *config.RoutingConfig {
+	return h.routingConfig.Load()
 }

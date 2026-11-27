@@ -43,7 +43,7 @@ func TestGeminiHandler_FastBypassNonPost(t *testing.T) {
 	routingCfg := &config.RoutingConfig{}
 	provReg := provider.NewRegistry()
 	transReg := translator.NewRegistry()
-	h := NewGeminiHandler(provReg, transReg, routingCfg)
+	h := NewGeminiHandler(provReg, transReg, routingPtr(routingCfg))
 
 	req := httptest.NewRequest("GET", "https://cloudcode-pa.googleapis.com/v1/listExperiments", nil)
 	ctx := &goproxy.ProxyCtx{}
@@ -61,7 +61,7 @@ func TestGeminiHandler_InternalRpcPassthrough(t *testing.T) {
 	routingCfg := &config.RoutingConfig{}
 	provReg := provider.NewRegistry()
 	transReg := translator.NewRegistry()
-	h := NewGeminiHandler(provReg, transReg, routingCfg)
+	h := NewGeminiHandler(provReg, transReg, routingPtr(routingCfg))
 
 	body := []byte(`{"userId": "12345"}`)
 	req := httptest.NewRequest("POST", "https://cloudcode-pa.googleapis.com/v1/fetchUserInfo", bytes.NewReader(body))
@@ -105,7 +105,7 @@ func TestGeminiHandler_GeminiBuiltinModelSubstitution(t *testing.T) {
 	}
 	provReg := provider.NewRegistry()
 	transReg := translator.NewRegistry()
-	h := NewGeminiHandler(provReg, transReg, routingCfg)
+	h := NewGeminiHandler(provReg, transReg, routingPtr(routingCfg))
 
 	rawBody := []byte(`{"model":"gemini-2.0-flash","request":{"contents":[{"parts":[{"text":"hello"}]}]}}`)
 	req := httptest.NewRequest("POST", "https://cloudcode-pa.googleapis.com/v1/streamGenerateContent", bytes.NewReader(rawBody))
@@ -197,7 +197,7 @@ func TestGeminiHandler_FetchAvailableModelsCache(t *testing.T) {
 	routingCfg := &config.RoutingConfig{}
 	provReg := provider.NewRegistry()
 	transReg := translator.NewRegistry()
-	h := NewGeminiHandler(provReg, transReg, routingCfg)
+	h := NewGeminiHandler(provReg, transReg, routingPtr(routingCfg))
 
 	// Pre-populate cache
 	cachedJSON := []byte(`{"models":{"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)"}}}`)

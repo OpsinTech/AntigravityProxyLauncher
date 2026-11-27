@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 )
 
 // ProviderConfig holds configuration for a single AI provider.
@@ -127,6 +128,7 @@ type ProviderFactory func(config ProviderConfig) (Provider, error)
 
 // Registry manages provider factories and active provider instances.
 type Registry struct {
+	mu        sync.RWMutex
 	factories map[string]ProviderFactory
 	providers map[string]Provider
 }
@@ -141,11 +143,15 @@ func NewRegistry() *Registry {
 
 // RegisterFactory registers a provider factory for a given type.
 func (r *Registry) RegisterFactory(providerType string, factory ProviderFactory) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.factories[providerType] = factory
 }
 
 // GetProvider returns an active provider by ID.
 func (r *Registry) GetProvider(id string) (Provider, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if p, ok := r.providers[id]; ok {
 		return p, nil
 	}
@@ -153,9 +159,21 @@ func (r *Registry) GetProvider(id string) (Provider, error) {
 }
 
 // LoadProvidersFromConfig creates providers from a list of configs.
+// LoadProvidersFromConfig builds providers and merges them into the registry.
 func (r *Registry) LoadProvidersFromConfig(configs []ProviderConfig) {
+	r.ReplaceProvidersFromConfig(configs)
+}
+
+// ReplaceProvidersFromConfig atomically swaps the active provider set.
+// 用于 SIGHUP 热重载：先整份重建，再一次性替换，避免请求读到半成品。
+func (r *Registry) ReplaceProvidersFromConfig(configs []ProviderConfig) {
+	// 先在局部 map 里建好，再一次性替换：持锁期间做工厂调用（可能包含网络请求，
+	// 如 auto_models 拉模型列表）会把所有请求阻塞住，也会暴露半成品状态。
+	build := make(map[string]Provider)
 	for _, cfg := range configs {
+		r.mu.RLock()
 		factory, ok := r.factories[cfg.Type]
+		r.mu.RUnlock()
 		if !ok {
 			log.Printf("[Provider] Unknown provider type: %s (id=%s)", cfg.Type, cfg.ID)
 			continue
@@ -165,7 +183,11 @@ func (r *Registry) LoadProvidersFromConfig(configs []ProviderConfig) {
 			log.Printf("[Provider] Failed to create provider %s: %v", cfg.ID, err)
 			continue
 		}
-		r.providers[cfg.ID] = p
+		build[cfg.ID] = p
 		log.Printf("[Provider] Registered provider: %s (type=%s, models=%v)", cfg.ID, cfg.Type, cfg.Models)
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.providers = build
 }

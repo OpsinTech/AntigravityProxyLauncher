@@ -3,6 +3,8 @@ import Foundation
 enum LauncherCLICommand: Equatable {
     case doctor
     case verifyPatched
+    case verifyAll
+    case restartGateway
     case patchAndLaunch
     case help
     case unknown(String)
@@ -21,6 +23,8 @@ enum LauncherCLICommandParser {
             switch arg {
             case "--doctor": return .doctor
             case "--verify-patched": return .verifyPatched
+            case "--verify-all": return .verifyAll
+            case "--restart-gateway": return .restartGateway
             case "--patch-and-launch": return .patchAndLaunch
             case "--help", "-h": return .help
             default:
@@ -41,6 +45,8 @@ Usage:
     \(executableName) --doctor
     \(executableName) --export-diagnostics
     \(executableName) --verify-patched
+    \(executableName) --verify-all      # 逐个目标检查 Antigravity / IDE / Gemini / agy
+    \(executableName) --restart-gateway # 按最新配置重启本地网关（18081）
     \(executableName) --patch-and-launch
     \(executableName) --help
 
@@ -49,6 +55,8 @@ Legacy SwiftPM mode:
   swift run AntigravityProxyLauncher -- --doctor
   swift run AntigravityProxyLauncher -- --export-diagnostics
   swift run AntigravityProxyLauncher -- --verify-patched
+  swift run AntigravityProxyLauncher -- --verify-all
+  swift run AntigravityProxyLauncher -- --restart-gateway
   swift run AntigravityProxyLauncher -- --patch-and-launch
   swift run AntigravityProxyLauncher -- --help
 

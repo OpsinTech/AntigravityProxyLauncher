@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -148,13 +150,19 @@ func main() {
 		}
 	}
 
-	// Create routing config for handlers
+	// Create routing config for handlers.
+	// 用 atomic.Pointer 持有：SIGHUP 热重载时整份替换，请求侧无需重启进程即可读到新规则。
 	routingConfig := modelRouting.ToHandlerRoutingConfig()
+	var routingPtr atomic.Pointer[config.RoutingConfig]
+	routingPtr.Store(&routingConfig)
 
 	// Register handlers
-	handlerRegistry.Register(handler.NewAnthropicHandler(providerRegistry, translatorRegistry, &routingConfig))
-	handlerRegistry.Register(handler.NewGeminiHandler(providerRegistry, translatorRegistry, &routingConfig))
-	handlerRegistry.Register(handler.NewOpenAIHandler(providerRegistry, translatorRegistry, &routingConfig))
+	handlerRegistry.Register(handler.NewAnthropicHandler(providerRegistry, translatorRegistry, &routingPtr))
+	handlerRegistry.Register(handler.NewGeminiHandler(providerRegistry, translatorRegistry, &routingPtr))
+	handlerRegistry.Register(handler.NewOpenAIHandler(providerRegistry, translatorRegistry, &routingPtr))
+
+	// SIGHUP = 热重载模型路由配置（Launcher 保存路由规则时发这个信号）。
+	go watchRoutingReload(providerRegistry, &routingPtr)
 
 	// Create proxy server
 	proxy := goproxy.NewProxyHttpServer()
@@ -278,6 +286,45 @@ func configureOutbound(proxy *goproxy.ProxyHttpServer) {
 }
 
 // runPassthroughOnly runs the proxy without model routing
+// watchRoutingReload 监听 SIGHUP 并热重载模型路由配置。
+// 这样 Launcher 保存路由规则时不必重启网关，正在进行的 SSE 流不会被切断。
+func watchRoutingReload(pr *provider.Registry, ptr *atomic.Pointer[config.RoutingConfig]) {
+	reloadCh := make(chan os.Signal, 1)
+	signal.Notify(reloadCh, syscall.SIGHUP)
+	for range reloadCh {
+		if err := applyRoutingConfig(pr, ptr); err != nil {
+			log.Printf("[MITM] SIGHUP reload failed: %v (keeping previous routing)", err)
+			continue
+		}
+		log.Printf("[MITM] routing config hot-reloaded (no restart)")
+	}
+}
+
+// applyRoutingConfig 读取磁盘上的路由配置并原子替换 provider 集合与路由规则。
+// 任一步失败都保留旧配置，避免把正在服务的网关打成半死状态。
+func applyRoutingConfig(pr *provider.Registry, ptr *atomic.Pointer[config.RoutingConfig]) error {
+	modelRouting := config.LoadModelRouting()
+	if len(modelRouting.Providers) == 0 {
+		return fmt.Errorf("routing config is empty")
+	}
+
+	pr.ReplaceProvidersFromConfig(modelRouting.ToProviderConfigs())
+
+	for i := range modelRouting.Providers {
+		p := &modelRouting.Providers[i]
+		if !p.Enabled {
+			continue
+		}
+		if inst, err := pr.GetProvider(p.ID); err == nil {
+			p.Models = inst.SupportedModels()
+		}
+	}
+
+	rc := modelRouting.ToHandlerRoutingConfig()
+	ptr.Store(&rc)
+	return nil
+}
+
 func runPassthroughOnly() {
 	proxy := goproxy.NewProxyHttpServer()
 	proxy.Verbose = false
@@ -301,6 +348,11 @@ func runPassthroughOnly() {
 		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,
 	}
+
+	// 透传模式下没有路由配置可重载，SIGHUP 必须显式忽略：
+	// Unix 默认行为是终止进程，而 Launcher 保存路由规则时会发 SIGHUP，
+	// 那会把正在透传的网关直接杀掉。
+	signal.Ignore(syscall.SIGHUP)
 
 	go func() {
 		sigCh := make(chan os.Signal, 1)

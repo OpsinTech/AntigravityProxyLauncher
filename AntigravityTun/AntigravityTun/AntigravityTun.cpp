@@ -5,6 +5,8 @@
 #include <cctype>
 #include <cstring>
 #include <dlfcn.h>
+#include <limits.h>
+#include <stdlib.h>
 #include <mutex>
 #include <unordered_map>
 
@@ -29,8 +31,12 @@ static bool IsAppAllowedForMitm() {
         std::string execPath(path);
         std::string lowerPath = execPath;
         std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
-        // User requested: prioritize antigravity and antigravity ide
-        if (lowerPath.find("antigravity") != std::string::npos) {
+        // Antigravity / Antigravity IDE / Gemini share the Google AI backend, so
+        // model routing must be able to intercept all of them. Matching only
+        // "antigravity" silently disabled model routing for the Gemini app (its
+        // executable lives at .../Gemini.app/Contents/MacOS/Gemini).
+        if (lowerPath.find("antigravity") != std::string::npos ||
+            lowerPath.find("gemini") != std::string::npos) {
             return true;
         }
     }
@@ -302,6 +308,30 @@ int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
 
 
 
+// 当前进程是否被配置排除在 FakeIP 之外。
+// Gemini 这类链接 Network.framework 的 App：连接在框架内部建立，connect hook
+// 覆盖不到，返回 FakeIP 只会把连接打到不存在的地址，所以直接跳过改写。
+static bool IsFakeIPBypassedForCurrentProcess() {
+  static const bool bypassed = []() {
+    char path[PATH_MAX];
+    uint32_t size = sizeof(path);
+    if (_NSGetExecutablePath(path, &size) != 0)
+      return false;
+
+    const char *resolved = path;
+    char buf[PATH_MAX];
+    if (realpath(path, buf) != nullptr)
+      resolved = buf;
+
+    if (Core::Config::Instance().ShouldBypassFakeIP(resolved)) {
+      Core::Logger::Info(std::string("Hook: FakeIP bypassed for this process: ") + resolved);
+      return true;
+    }
+    return false;
+  }();
+  return bypassed;
+}
+
 // Hook getaddrinfo 返回 FakeIP
 int my_getaddrinfo(const char *node, const char *service,
                    const struct addrinfo *hints, struct addrinfo **res) {
@@ -382,7 +412,29 @@ int my_getaddrinfo(const char *node, const char *service,
     return getaddrinfo(node, service, hints, res);
   }
 
-  if (node && Core::Config::Instance().fakeIp.enabled) {
+  // 被排除的进程（Gemini）：域名统一解析到本地回环地址，交给本地 SNI 分流器。
+  // 这类 App 用 Network.framework 在框架内部建连，connect hook 拿不到流量，
+  // 但 getaddrinfo 仍经过 libc，所以把目标地址改到本地是唯一不依赖 TUN 的接管点。
+  // 调用方显式只要 IPv6 时，把 127.0.0.1 交给 getaddrinfo 会失败或返回 IPv4-mapped
+  // 地址，破坏 AAAA 语义；这种情况放行原解析（分流器只服务 IPv4 回环）。
+  const bool wantsIPv6Only = hints != nullptr && hints->ai_family == AF_INET6;
+
+  if (node && !wantsIPv6Only && Core::Config::Instance().fakeIp.enabled &&
+      IsFakeIPBypassedForCurrentProcess()) {
+    if (!IsIpLiteral(node) && ShouldMapAsDomain(node)) {
+      std::string target = Core::Config::Instance().fakeIp.bypassCidr;
+      size_t slash = target.find('/');
+      if (slash != std::string::npos)
+        target = target.substr(0, slash);
+      if (!target.empty()) {
+        Core::Logger::Info("Hook: getaddrinfo localized " + std::string(node) + " -> " + target);
+        return getaddrinfo(target.c_str(), service, hints, res);
+      }
+    }
+  }
+
+  if (node && Core::Config::Instance().fakeIp.enabled &&
+      !IsFakeIPBypassedForCurrentProcess()) {
     // 只映射合法域名，避免把 bypass 规则字符串映射成 FakeIP
     if (!IsIpLiteral(node) && ShouldMapAsDomain(node)) {
       // 分配 FakeIP
@@ -464,7 +516,72 @@ DYLD_INTERPOSE(my_SecTrustEvaluate, SecTrustEvaluate)
 DYLD_INTERPOSE(my_SecTrustEvaluateWithError, SecTrustEvaluateWithError)
 
 // 构造函数
+// 子进程会继承 DYLD_INSERT_LIBRARIES。Info.plist 的 LSEnvironment 里用的是
+// `@executable_path/../Resources/...`，这个相对形式只在主可执行文件所在层级成立；
+// helper（如 GeminiAppLauncher、Electron Helper、language_server）继承后会被拼成
+// `.../Contents/Resources/Resources/libAntigravityTun.dylib`，dyld 找不到库就直接
+// abort —— 表现为「主窗口没出来、子进程立刻崩」。
+// 构造期把变量改写成本 dylib 的真实绝对路径，继承链上每个进程都能正常加载。
+static void NormalizeInsertPathForChildren() {
+  Dl_info info;
+  if (dladdr((void *)&NormalizeInsertPathForChildren, &info) == 0 ||
+      info.dli_fname == nullptr) {
+    return;
+  }
+  char resolved[PATH_MAX];
+  const char *absolute = realpath(info.dli_fname, resolved) != nullptr
+                             ? resolved
+                             : info.dli_fname;
+  if (absolute == nullptr || absolute[0] != '/') {
+    return;
+  }
+  const char *current = getenv("DYLD_INSERT_LIBRARIES");
+  if (current == nullptr) {
+    setenv("DYLD_INSERT_LIBRARIES", absolute, 1);
+    return;
+  }
+  if (strcmp(current, absolute) == 0) {
+    return;
+  }
+  // 保留调用方原有的其它注入项（冒号分隔），只把本 dylib 的条目替换为绝对路径。
+  std::string rebuilt;
+  std::string existing(current);
+  size_t start = 0;
+  bool foundSelf = false;
+  while (start <= existing.size()) {
+    size_t end = existing.find(':', start);
+    if (end == std::string::npos) end = existing.size();
+    std::string item = existing.substr(start, end - start);
+    if (!item.empty()) {
+      // 判定「是不是本 dylib」：文件名相同，或就是刚解析出的绝对路径。
+      std::string itemName = item.substr(item.find_last_of('/') == std::string::npos
+                                             ? 0 : item.find_last_of('/') + 1);
+      std::string selfName = std::string(absolute).substr(
+          std::string(absolute).find_last_of('/') + 1);
+      if (item == absolute || itemName == selfName) {
+        if (!foundSelf) {
+          if (!rebuilt.empty()) rebuilt += ':';
+          rebuilt += absolute;
+          foundSelf = true;
+        }
+        // 同名重复项直接丢弃，避免重复加载
+      } else {
+        if (!rebuilt.empty()) rebuilt += ':';
+        rebuilt += item;
+      }
+    }
+    if (end == existing.size()) break;
+    start = end + 1;
+  }
+  if (!foundSelf) {
+    if (!rebuilt.empty()) rebuilt += ':';
+    rebuilt += absolute;
+  }
+  setenv("DYLD_INSERT_LIBRARIES", rebuilt.c_str(), 1);
+}
+
 __attribute__((constructor)) void LoaderInit() {
   Core::Logger::Init(Core::Logger::LogPath("antigravity_proxy_loader.log"));
+  NormalizeInsertPathForChildren();
   Core::Logger::Info("AntigravityTun Loaded.");
 }

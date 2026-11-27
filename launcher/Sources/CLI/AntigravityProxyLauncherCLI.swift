@@ -17,6 +17,10 @@ struct AntigravityProxyLauncherCLI {
             Darwin.exit(doctor.run())
         case .verifyPatched:
             Darwin.exit(doctor.verifyPatchedAppFromCLI())
+        case .verifyAll:
+            Darwin.exit(doctor.verifyAllTargetsFromCLI())
+        case .restartGateway:
+            Darwin.exit(doctor.restartGatewayFromCLI())
         case .patchAndLaunch:
             Darwin.exit(doctor.patchAndLaunchFromCLI())
         case .help:

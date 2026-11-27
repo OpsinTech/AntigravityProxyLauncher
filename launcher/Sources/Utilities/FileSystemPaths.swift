@@ -2,15 +2,25 @@ import Foundation
 
 enum FileSystemPaths {
     private static var sourceFileURL: URL {
-#if DEBUG
-        URL(fileURLWithPath: #filePath)
-#else
-        Bundle.main.bundleURL.appendingPathComponent("Sources/Utilities/FileSystemPaths.swift")
-#endif
+        // Release 下原先用 Bundle.main.bundleURL 拼路径：对 CLI 可执行文件来说
+        // bundleURL 就是它所在的目录（如 launcher/build/Release），于是 launcherRoot
+        // 也被算成那里，所有资源候选路径全部错位（bundledDylib 变成
+        // launcher/build/Release/Resources/...，永远不存在）。
+        // #filePath 是编译期常量，本地构建机一定存在，优先用它；
+        // 拷到别的机器后它会失效，再退回 bundleURL 的老逻辑。
+        let compiled = URL(fileURLWithPath: #filePath)
+        if FileManager.default.fileExists(atPath: compiled.path) {
+            return compiled
+        }
+        return Bundle.main.bundleURL.appendingPathComponent("Sources/Utilities/FileSystemPaths.swift")
     }
 
     private static var appBundleResourceRoot: URL? {
-        Bundle.main.resourceURL
+        // 只有真正的 .app 才用 Bundle.main.resourceURL。CLI 可执行文件的
+        // resourceURL 就是它所在的目录（如 build/Release），资源查找会全部落空，
+        // 于是 bundledDylib 之类的路径变成不存在的假路径。
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return nil }
+        return Bundle.main.resourceURL
     }
 
     private static func bundleResourceURL(
@@ -121,6 +131,19 @@ enum FileSystemPaths {
     }
 
     /// 代理配置全局唯一，不随 activeApp 变化
+    /// MITM 网关的自签 CA（Node.js / Go 都需要信任它才会走 18081）
+    static var goproxyCAFile: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/antigravity/goproxy_ca.pem")
+    }
+
+    /// 系统根证书 + goproxy CA 合并包。`SSL_CERT_FILE` 对 Go 是**替换**而非追加，
+    /// 只指向自签 CA 会让所有真实 HTTPS 端点证书校验失败。
+    static var combinedCAFile: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/antigravity/combined_ca.pem")
+    }
+
     static var userProxyConfigFile: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/antigravity/proxy_config.json")

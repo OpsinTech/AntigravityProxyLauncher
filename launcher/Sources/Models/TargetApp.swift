@@ -100,9 +100,15 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
 
     var launchArguments: [String] {
         switch self {
-        case .antigravity, .antigravityIDE, .gemini:
+        // Chromium/Electron flags. Gemini is a native Swift app: feeding it
+        // `--use-mock-keychain` makes its OAuth layer use a volatile mock
+        // keychain, so the stored Google account is never read and every launch
+        // starts a brand-new sign-in (`signinStatus=noActiveAccount` →
+        // `AuthCoordinator: No users configured, starting new OAuth flow`).
+        // Only the Electron targets may receive these flags.
+        case .antigravity, .antigravityIDE:
             return ["--use-mock-keychain", "--password-store=basic"]
-        case .agy, .claudeCode, .codex:
+        case .gemini, .agy, .claudeCode, .codex:
             return []
         }
     }
@@ -110,9 +116,17 @@ enum TargetApp: String, Codable, CaseIterable, Identifiable {
     var environmentVariables: [String: String] {
         switch self {
         case .antigravity, .antigravityIDE:
+            // HTTPS_PROXY/HTTP_PROXY 指向本地 MITM 网关（18081），不是一个可有可无的
+            // 便利项：Antigravity 的 language_server 是 Go 程序（hardened runtime、
+            // Google 签名，无法通过 DYLD 注入代理），它只认环境变量。缺了这两行，
+            // language_server 会直连 172.217.x.x:443 并报
+            // `dial tcp ...: i/o timeout`（loadCodeAssist / listExperiments 全失败）。
             return [
                 "ELECTRON_NO_UPDATER": "1",
-                "SUDisableAutomaticChecks": "YES"
+                "SUDisableAutomaticChecks": "YES",
+                "HTTPS_PROXY": "http://127.0.0.1:18081",
+                "HTTP_PROXY": "http://127.0.0.1:18081",
+                "NO_PROXY": "127.0.0.1,localhost"
             ]
         case .gemini, .agy, .claudeCode, .codex:
             return [:]
