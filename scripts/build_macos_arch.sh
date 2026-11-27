@@ -35,6 +35,8 @@ INTERMEDIATE_DIR="$OUTPUT_DIR/intermediates/$ARCH"
 DYLIB_BUILD_DIR="$INTERMEDIATE_DIR/dylib"
 DYLIB_BIN="$DYLIB_BUILD_DIR/Release/libAntigravityTun.dylib"
 PROXY_BIN="$INTERMEDIATE_DIR/mitm_proxy"
+SNI_DIR="$ROOT_DIR/tools/sni_redirect"
+SNI_BIN="$INTERMEDIATE_DIR/sni_redirect"
 
 DMG_NAME="${APP_NAME}_${VERSION}-macos_${ARCH}.dmg"
 ZIP_NAME="${APP_NAME}_${VERSION}-macos_${ARCH}.zip"
@@ -71,6 +73,13 @@ echo "[2/6] Building Go MITM proxy (${GOARCH})..."
 )
 test -f "$PROXY_BIN"
 
+echo "[2b/6] Building SNI redirect helper (${GOARCH})..."
+(
+  cd "$SNI_DIR"
+  GOOS=darwin GOARCH="$GOARCH" go build -trimpath -o "$SNI_BIN" .
+)
+test -f "$SNI_BIN"
+
 echo "[3/6] Generating launcher Xcode project..."
 (
   cd "$PROJECT_DIR"
@@ -98,6 +107,9 @@ echo "[5/6] Bundling and verifying ${ARCH} components..."
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$DYLIB_BIN" "$APP_BUNDLE/Contents/Resources/libAntigravityTun.dylib"
 cp "$PROXY_BIN" "$APP_BUNDLE/Contents/Resources/mitm_proxy"
+# Gemini 的 SNI 分流器：缺了它「修复」会直接报「安装包内缺少 sni_redirect 二进制」
+cp "$SNI_BIN" "$APP_BUNDLE/Contents/Resources/sni_redirect"
+chmod 755 "$APP_BUNDLE/Contents/Resources/sni_redirect"
 if [ -f "$PROXY_DIR/.env" ]; then
   cp "$PROXY_DIR/.env" "$APP_BUNDLE/Contents/Resources/.env"
 fi
@@ -116,6 +128,7 @@ verify_arch() {
 verify_arch "$APP_BIN"
 verify_arch "$APP_BUNDLE/Contents/Resources/libAntigravityTun.dylib"
 verify_arch "$APP_BUNDLE/Contents/Resources/mitm_proxy"
+verify_arch "$APP_BUNDLE/Contents/Resources/sni_redirect"
 
 for dylib in "$APP_BUNDLE/Contents/MacOS/"*.dylib; do
   [ -e "$dylib" ] || continue
