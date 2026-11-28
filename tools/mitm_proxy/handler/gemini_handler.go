@@ -2,17 +2,14 @@ package handler
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,21 +19,12 @@ import (
 	"github.com/elazarl/goproxy"
 )
 
-const defaultModelsCacheTTL = 12 * time.Hour
-
-type modelsCache struct {
-	mu            sync.RWMutex
-	body          []byte
-	header        http.Header
-	updatedAt     time.Time
-	modelsSummary string
-}
-
 type GeminiHandler struct {
 	providerRegistry   *provider.Registry
 	translatorRegistry *translator.Registry
 	routingConfig      *atomic.Pointer[config.RoutingConfig]
-	modelsCache        *modelsCache
+	// catalog holds the per-account model catalog snapshots (see catalog_cache.go).
+	catalog *catalogStore
 }
 
 func NewGeminiHandler(
@@ -48,7 +36,7 @@ func NewGeminiHandler(
 		providerRegistry:   providerRegistry,
 		translatorRegistry: translatorRegistry,
 		routingConfig:      routingConfig,
-		modelsCache:        &modelsCache{},
+		catalog:            newCatalogStore(),
 	}
 }
 
@@ -82,7 +70,7 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	// passthrough so a transient upstream disconnect (EOF) does not surface as a
 	// dead login page with no feedback.
 	if isNonModelRpc(r.URL.Path) {
-		return h.geminiPassthrough(r, ctx)
+		return h.geminiPassthrough(r, ctx, "")
 	}
 
 	// fetchAvailableModels: query models from local cache to avoid querying Google on every check
@@ -108,7 +96,7 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	if modelName == "" {
 		// Unknown/auxiliary POST: passthrough with transient-failure retry.
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return h.geminiPassthrough(r, ctx)
+		return h.geminiPassthrough(r, ctx, "")
 	}
 
 	log.Printf("[Gemini] Detected model: %s, searching routing rules...", modelName)
@@ -150,7 +138,7 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		r.ContentLength = int64(len(bodyBytes))
 		r.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-		return h.geminiPassthrough(r, ctx)
+		return h.geminiPassthrough(r, ctx, modelName)
 	}
 
 	log.Printf("[Gemini] Rule matched: %s -> %s @ %s", modelName, targetModel, targetProviderID)
@@ -164,7 +152,7 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 			if patched == nil {
 				log.Printf("[Gemini] Failed to substitute model for gemini_builtin, passing through")
 				r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-				return h.geminiPassthrough(r, ctx)
+				return h.geminiPassthrough(r, ctx, modelName)
 			}
 			log.Printf("[Gemini] gemini_builtin: substituting model %s -> %s", modelName, targetModel)
 			bodyBytes = patched
@@ -177,7 +165,7 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 		r.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
 		// gemini_builtin keeps the live Google stream: the retry helper forwards
 		// it unbuffered as soon as the headers arrive.
-		return h.geminiPassthrough(r, ctx)
+		return h.geminiPassthrough(r, ctx, modelName)
 	}
 
 	// Local model servers (ollama / vllm / llama.cpp) often need no API key,
@@ -186,28 +174,28 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 	if providerConfig == nil {
 		log.Printf("[Gemini] Provider not configured: %s", targetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return h.geminiPassthrough(r, ctx)
+		return h.geminiPassthrough(r, ctx, modelName)
 	}
 
 	trans := h.translatorRegistry.FindTranslator("gemini", providerConfig.Type)
 	if trans == nil {
 		log.Printf("[Gemini] No translator for gemini->%s", providerConfig.Type)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return h.geminiPassthrough(r, ctx)
+		return h.geminiPassthrough(r, ctx, modelName)
 	}
 
 	p, err := h.providerRegistry.GetProvider(targetProviderID)
 	if err != nil {
 		log.Printf("[Gemini] Provider not found: %s", targetProviderID)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return h.geminiPassthrough(r, ctx)
+		return h.geminiPassthrough(r, ctx, modelName)
 	}
 
 	providerReq, err := trans.TranslateRequest(bodyBytes, targetModel)
 	if err != nil {
 		log.Printf("[Gemini] Translation failed: %v", err)
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		return h.geminiPassthrough(r, ctx)
+		return h.geminiPassthrough(r, ctx, modelName)
 	}
 	MarkExternalAPI(providerReq, r)
 
@@ -225,7 +213,9 @@ func (h *GeminiHandler) Handle(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Re
 // geminiPassthrough forwards r upstream unchanged through the retry-hardened
 // passthrough helper: transient upstream failures (EOF, 5xx, truncated body)
 // are retried, and exhausted attempts surface a 502 instead of a silent nil.
-func (h *GeminiHandler) geminiPassthrough(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+// modelName is the model the client asked for, or "" for auxiliary RPCs; it is
+// only used by the read-only rejection observer below.
+func (h *GeminiHandler) geminiPassthrough(r *http.Request, ctx *goproxy.ProxyCtx, modelName string) (*http.Request, *http.Response) {
 	bodyBytes, err := readRequestBody(r)
 	if err != nil {
 		log.Printf("[Gemini] Failed to read passthrough body: %v", err)
@@ -234,6 +224,9 @@ func (h *GeminiHandler) geminiPassthrough(r *http.Request, ctx *goproxy.ProxyCtx
 	_, resp := passthroughWithRetry("Gemini", r, bodyBytes, ctx, passthroughMaxRetries)
 	// Diagnostic only; inert unless ~/.config/antigravity/dump_rpc exists.
 	dumpAuxRpcIfRequested(r.URL.Path, resp)
+	// Read-only: records upstream 404s per model so future decisions can be made on
+	// data. It never changes the response or the catalog.
+	observeModelRejection(modelName, r, resp)
 	return r, resp
 }
 
@@ -268,110 +261,220 @@ func cloneHeader(src http.Header) http.Header {
 }
 
 func (h *GeminiHandler) handleFetchAvailableModels(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-	// 1. Check in-memory cache
-	h.modelsCache.mu.RLock()
-	hasCached := len(h.modelsCache.body) > 0 && time.Since(h.modelsCache.updatedAt) < defaultModelsCacheTTL
-	if hasCached {
-		cachedBody := h.modelsCache.body
-		respHeader := cloneHeader(h.modelsCache.header)
-		age := time.Since(h.modelsCache.updatedAt).Round(time.Second)
-		h.modelsCache.mu.RUnlock()
-
-		// The cache keeps the upstream body verbatim; window overrides are applied
-		// per response so a routing-config change takes effect without waiting for
-		// the cache to expire.
-		cachedBody = h.applyModelWindowOverrides(cachedBody)
-		respHeader.Del("Content-Encoding")
-		respHeader.Set("Content-Length", strconv.Itoa(len(cachedBody)))
-
-		if os.Getenv("MITM_DEBUG") == "true" {
-			log.Printf("[Gemini] fetchAvailableModels: served from cache (%d bytes, age: %v)", len(cachedBody), age)
-		}
-
-		return r, &http.Response{
-			StatusCode:    http.StatusOK,
-			ProtoMajor:    1,
-			ProtoMinor:    1,
-			Header:        respHeader,
-			Body:          io.NopCloser(bytes.NewReader(cachedBody)),
-			ContentLength: int64(len(cachedBody)),
-			Request:       r,
-		}
-	}
-	h.modelsCache.mu.RUnlock()
-
-	// 2. Cache miss or expired: query upstream Google
-	log.Printf("[Gemini] fetchAvailableModels: cache miss/expired, fetching from upstream (%s %s)", r.URL.Host, r.URL.Path)
-
-	resp, err := ctx.RoundTrip(r)
+	bodyBytes, err := readRequestBodyCapped(r)
 	if err != nil {
-		log.Printf("[Gemini] fetchAvailableModels upstream error: %v", err)
-		h.modelsCache.mu.RLock()
-		if len(h.modelsCache.body) > 0 {
-			cachedBody := h.modelsCache.body
-			respHeader := cloneHeader(h.modelsCache.header)
-			h.modelsCache.mu.RUnlock()
-			log.Printf("[Gemini] fetchAvailableModels: upstream failed, serving stale cache")
-			return r, &http.Response{
-				StatusCode:    http.StatusOK,
-				ProtoMajor:    1,
-				ProtoMinor:    1,
-				Header:        respHeader,
-				Body:          io.NopCloser(bytes.NewReader(cachedBody)),
-				ContentLength: int64(len(cachedBody)),
-				Request:       r,
-			}
+		log.Printf("[Gemini] fetchAvailableModels: cannot buffer request body: %v", err)
+		return r, goproxy.NewResponse(r, "text/plain", http.StatusRequestEntityTooLarge, "Request body too large")
+	}
+
+	key := catalogAccountKey(r, bodyBytes)
+	unlock := h.catalog.lockAccount(key)
+	defer unlock()
+
+	// 1. Fresh snapshot: serve it, and log the hit so the client's real refresh
+	// cadence is measurable without MITM_DEBUG (it polls every 5 minutes).
+	if entry, age, ok := h.catalog.lookup(key, catalogCacheTTL); ok {
+		log.Printf("[Gemini] fetchAvailableModels: cache hit key=%s age=%v models=%d",
+			key, age.Round(time.Second), entry.snapshot.modelCount())
+		return r, catalogResponse(r, entry.snapshot, entry.header, h)
+	}
+
+	// 2. Refresh from upstream through the retry-hardened path (transport EOF and
+	// 5xx are retried; this RPC used to be the only one without that safety net).
+	log.Printf("[Gemini] fetchAvailableModels: refreshing from upstream (%s %s, key=%s)",
+		r.URL.Host, r.URL.Path, key)
+	started := time.Now()
+	resp, rerr := roundTripWithRetry("Gemini", r, bodyBytes, ctx, passthroughMaxRetries)
+	if rerr != nil || resp == nil || resp.Body == nil {
+		log.Printf("[Gemini] fetchAvailableModels upstream error: %v", rerr)
+		if stale := h.catalog.peek(key); stale != nil {
+			log.Printf("[Gemini] fetchAvailableModels: serving stale snapshot age=%v models=%d",
+				time.Since(stale.updatedAt).Round(time.Minute), stale.snapshot.modelCount())
+			return r, catalogResponse(r, stale.snapshot, stale.header, h)
 		}
-		h.modelsCache.mu.RUnlock()
 		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream error")
 	}
 
-	if resp == nil || resp.Body == nil {
-		log.Printf("[Gemini] fetchAvailableModels upstream returned nil response or body")
-		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream returned empty response")
+	body, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		log.Printf("[Gemini] fetchAvailableModels: truncated upstream body: %v", readErr)
+		if stale := h.catalog.peek(key); stale != nil {
+			return r, catalogResponse(r, stale.snapshot, stale.header, h)
+		}
+		return r, goproxy.NewResponse(r, "text/plain", http.StatusBadGateway, "Upstream error")
 	}
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	next, perr := parseCatalog(body)
+	if resp.StatusCode != http.StatusOK || perr != nil || next.modelCount() < minCatalogModels {
+		// Error bodies and placeholders must never enter the cache: a cached 401
+		// used to be replayed as a 200 with zero models for the whole TTL.
+		log.Printf("[Gemini] fetchAvailableModels: not caching upstream status=%d models=%d err=%v",
+			resp.StatusCode, next.modelCount(), perr)
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		return r, resp
+	}
 
-	if len(bodyBytes) >= 2 && bodyBytes[0] == 0x1f && bodyBytes[1] == 0x8b {
-		gr, gzErr := gzip.NewReader(bytes.NewReader(bodyBytes))
-		if gzErr == nil {
-			decompressed, err := io.ReadAll(gr)
-			gr.Close()
-			if err == nil && len(decompressed) > 0 {
-				bodyBytes = decompressed
+	// 3. Reconcile with the previous snapshot. A suspicious shrink is first
+	// cross-checked against the other Cloud Code endpoint, because the two are
+	// answered by different rollout shards.
+	var prev *catalogEntry
+	if entry := h.catalog.peek(key); entry != nil {
+		prev = entry
+	}
+	didProbe := false
+	var alt *catalogSnapshot
+	if prev == nil {
+		// Cold start (first run, or a new account): there is no baseline to compare
+		// against, yet Google answers the catalog from a per-request rollout bucket,
+		// so this single sample can be the shrunken one. Take the richest of a
+		// second sample on the same host and one on the other endpoint.
+		next = h.richestCatalog(ctx, r, bodyBytes, next)
+		didProbe = true
+	} else {
+		shrink := missingRatio(prev.snapshot, next) > catalogShrinkGuard
+		overdue := time.Since(prev.lastProbe) > catalogProbeInterval
+		switch {
+		case shrink:
+			log.Printf("[Gemini] fetchAvailableModels: suspicious shrink %.0f%% (%d -> %d models), cross-checking %s",
+				missingRatio(prev.snapshot, next)*100, prev.snapshot.modelCount(), next.modelCount(),
+				alternateCatalogHost(r.URL.Host))
+		case overdue:
+			log.Printf("[Gemini] fetchAvailableModels: periodic widen, cross-checking %s",
+				alternateCatalogHost(r.URL.Host))
+		}
+		if shrink || overdue {
+			didProbe = true
+			alt = h.probeCatalog(ctx, r, bodyBytes, alternateCatalogHost(r.URL.Host))
+			if alt != nil && alt.modelCount() > next.modelCount() {
+				log.Printf("[Gemini] fetchAvailableModels: cross-check is fuller (%d > %d models), adopting it",
+					alt.modelCount(), next.modelCount())
+				next, alt = alt, nil // folded into next
 			}
 		}
 	}
 
-	summary := summarizeAvailableModels(bodyBytes)
+	lastProbe := time.Time{}
+	if prev != nil {
+		lastProbe = prev.lastProbe
+	}
+	if didProbe {
+		lastProbe = time.Now()
+	}
+	prevSnapshot := (*catalogSnapshot)(nil)
+	prevMiss := map[string]int(nil)
+	if prev != nil {
+		prevSnapshot, prevMiss = prev.snapshot, prev.miss
+	}
+	result := reconcileCatalog(prevSnapshot, prevMiss, next, alt)
 
-	h.modelsCache.mu.Lock()
-	changed := summary != h.modelsCache.modelsSummary
-	h.modelsCache.body = bodyBytes
-	h.modelsCache.header = cloneHeader(resp.Header)
-	h.modelsCache.header.Del("Content-Encoding")
-	h.modelsCache.header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-	h.modelsCache.updatedAt = time.Now()
-	h.modelsCache.modelsSummary = summary
-	h.modelsCache.mu.Unlock()
-
-	if changed {
-		log.Printf("[Gemini] fetchAvailableModels models updated: %s", summary)
-	} else if os.Getenv("MITM_DEBUG") == "true" {
-		log.Printf("[Gemini] fetchAvailableModels models refreshed (no changes)")
+	entry := &catalogEntry{
+		snapshot:  result.Snapshot,
+		header:    cloneHeader(resp.Header),
+		updatedAt: time.Now(),
+		miss:      result.Miss,
+		summary:   summarizeAvailableModels(result.Snapshot.encode()),
+		lastProbe: lastProbe,
 	}
 
-	// Advertise the window of the model that actually answers, not the built-in
-	// one, so the client's checkpoint budget matches the routed backend.
-	servedBody := h.applyModelWindowOverrides(bodyBytes)
+	changed := prev == nil || prev.summary != entry.summary
+	h.catalog.store(key, entry)
 
-	resp.Header.Del("Content-Encoding")
-	resp.ContentLength = int64(len(servedBody))
-	resp.Header.Set("Content-Length", strconv.Itoa(len(servedBody)))
-	resp.Body = io.NopCloser(bytes.NewBuffer(servedBody))
-	return r, resp
+	switch {
+	case len(result.Dropped) > 0:
+		log.Printf("[Gemini] fetchAvailableModels: dropped after %d consecutive misses: %v",
+			maxCatalogMisses, result.Dropped)
+	case len(result.Restored) > 0:
+		log.Printf("[Gemini] fetchAvailableModels: kept %d model(s) missing upstream (greyed): %v",
+			len(result.Restored), result.Restored)
+	}
+	if changed {
+		log.Printf("[Gemini] fetchAvailableModels models updated: %s", entry.summary)
+	} else {
+		log.Printf("[Gemini] fetchAvailableModels: refreshed in %v, %d models (no change)",
+			time.Since(started).Round(time.Millisecond), entry.snapshot.modelCount())
+	}
+
+	return r, catalogResponse(r, entry.snapshot, entry.header, h)
+}
+
+// catalogResponse renders a snapshot as the client-visible response: window
+// overrides are applied per response so a routing-config change takes effect
+// without waiting for the snapshot to expire.
+func catalogResponse(r *http.Request, snap *catalogSnapshot, hdr http.Header, h *GeminiHandler) *http.Response {
+	body := h.applyModelWindowOverrides(snap.encode())
+	header := cloneHeader(hdr)
+	header.Del("Content-Encoding")
+	header.Set("Content-Length", strconv.Itoa(len(body)))
+	return &http.Response{
+		StatusCode:    http.StatusOK,
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        header,
+		Body:          io.NopCloser(bytes.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Request:       r,
+	}
+}
+
+// probeCatalog asks one Cloud Code endpoint for the same catalog. It is used to
+// arbitrate a suspicious shrink and to widen a cold-start sample, and returns nil
+// whenever the probe cannot produce a usable answer.
+func (h *GeminiHandler) probeCatalog(ctx *goproxy.ProxyCtx, r *http.Request, body []byte, host string) *catalogSnapshot {
+	if ctx == nil || (ctx.Proxy == nil && ctx.RoundTripper == nil) || host == "" {
+		return nil
+	}
+	altHost := host
+	altReq := r.Clone(context.Background())
+	urlCopy := *r.URL
+	urlCopy.Host = altHost
+	altReq.URL = &urlCopy
+	altReq.Host = altHost
+	altReq.Body = io.NopCloser(bytes.NewBuffer(body))
+	altReq.ContentLength = int64(len(body))
+	altReq.Header = cloneHeader(r.Header)
+	altReq.Header.Set("Content-Length", strconv.Itoa(len(body)))
+
+	altCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	altReq = altReq.WithContext(altCtx)
+
+	resp, err := roundTripWithRetry("Gemini-alt", altReq, body, ctx, 1)
+	if err != nil || resp == nil || resp.Body == nil {
+		log.Printf("[Gemini] catalog cross-check on %s failed: %v", altHost, err)
+		return nil
+	}
+	defer resp.Body.Close()
+	altBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil || resp.StatusCode != http.StatusOK {
+		log.Printf("[Gemini] catalog cross-check on %s: status=%d err=%v", altHost, resp.StatusCode, readErr)
+		return nil
+	}
+	snap, perr := parseCatalog(altBody)
+	if perr != nil {
+		log.Printf("[Gemini] catalog cross-check on %s: unparsable body: %v", altHost, perr)
+		return nil
+	}
+	log.Printf("[Gemini] catalog probe on %s: %d models", altHost, snap.modelCount())
+	return snap
+}
+
+// richestCatalog returns the snapshot with the most models among the primary
+// answer and up to two extra probes (same host, other endpoint). Cold start only:
+// the bucket that answered first may be the shrunken one, and there is no
+// previous snapshot to notice it.
+func (h *GeminiHandler) richestCatalog(ctx *goproxy.ProxyCtx, r *http.Request, body []byte, primary *catalogSnapshot) *catalogSnapshot {
+	best := primary
+	for _, host := range []string{r.URL.Host, alternateCatalogHost(r.URL.Host)} {
+		candidate := h.probeCatalog(ctx, r, body, host)
+		if candidate != nil && candidate.modelCount() > best.modelCount() {
+			log.Printf("[Gemini] fetchAvailableModels: cold-start probe on %s is fuller (%d > %d models), using it",
+				host, candidate.modelCount(), best.modelCount())
+			best = candidate
+		}
+	}
+	return best
 }
 
 // summarizeAvailableModels parses a fetchAvailableModels response body and
@@ -671,7 +774,6 @@ func ensureThoughtSignatures(body []byte) []byte {
 		SentinelThoughtSignature, modifiedCount)
 	return patched
 }
-
 
 // rc 返回当前路由配置快照。SIGHUP 热重载会原子替换指针，
 // 因此每次请求都重新 Load，避免一直持着旧配置。
