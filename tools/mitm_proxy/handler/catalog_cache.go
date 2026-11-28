@@ -27,9 +27,12 @@ import (
 // Our earlier 12h whole-body cache had two failures: it froze a shrunken
 // upstream answer (20 of 41 models, all gemini-4-*) for half a day, and it lost
 // the snapshot on every proxy restart. The replacement below keeps an
-// authoritative snapshot per account, persists it to disk, cross-checks a
-// suspicious shrink against the other Cloud Code endpoint, and downgrades a
-// model that briefly disappears to `disabled` before finally dropping it.
+// authoritative snapshot per account, persists it to disk, re-samples a
+// suspicious shrink on both endpoints, and drops whatever no endpoint serves.
+//
+// It never synthesises `disabled`. That was tried and reverted: greying out the
+// models an upstream stop serving produced 21 unselectable rows out of 44 on
+// 11/28 20:02, which is strictly worse than not rendering them at all.
 const (
 	// catalogCacheTTL matches the client's own poll cadence: a refresh never
 	// serves data older than one polling interval, so the picker, the tier and
@@ -42,20 +45,25 @@ const (
 
 	// catalogShrinkGuard is the missing-model ratio above which a response is
 	// treated as suspicious (a differently rolled-out backend shard answered
-	// instead of a real entitlement change) and cross-checked against the other
-	// endpoint. 11/27 12:53 lost 20 of 41 models (49%) inside one second.
+	// instead of a real entitlement change) and re-sampled. 11/27 12:53 lost 20 of
+	// 41 models (49%) inside one second.
 	catalogShrinkGuard = 0.2
 
-	// maxCatalogMisses is how many consecutive authoritative responses may omit
-	// a model before it is dropped. The first miss greys the model out
-	// (`disabled: true`) instead of deleting it, so a one-off shrunken answer
-	// never makes a usable model vanish from the picker.
-	maxCatalogMisses = 2
+	// catalogExtraSamples is how many extra samples to take on the same host when
+	// a catalog looks shrunken or is being seen for the first time. Google picks
+	// the rollout bucket per request, so a retry often lands in a full one.
+	catalogExtraSamples = 2
 
-	// catalogProbeInterval bounds how often an unexpectedly small catalog is
-	// re-checked against the other endpoint. Without it, an account that first
-	// samples the shrunken bucket would keep that baseline forever: the next
-	// answer is identical, so nothing looks like a shrink.
+	// catalogCacheVersion guards the on-disk format. A snapshot written by an older
+	// build is discarded instead of reloaded: version 1 could contain locally
+	// synthesised `disabled` flags, and carrying those forward would resurrect the
+	// greyed-out picker this version exists to prevent.
+	catalogCacheVersion = 2
+
+	// catalogProbeInterval bounds how often the catalog is re-sampled when nothing
+	// looks wrong. Without it, an account that first sampled a shrunken bucket
+	// would keep that baseline forever: every later answer is identical, so
+	// nothing looks like a shrink.
 	catalogProbeInterval = 30 * time.Minute
 
 	catalogCacheDirName = "models_cache"
@@ -252,19 +260,31 @@ func (c *catalogSnapshot) pruneSorts() {
 	}
 }
 
-// disabledModelRaw marks an existing model entry as unavailable without removing
-// its metadata, so the picker greys it out instead of hiding it.
-func disabledModelRaw(raw json.RawMessage) json.RawMessage {
-	var details map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &details); err != nil || details == nil {
-		return raw
+// modelDisabledFlag reads a model's own `disabled` flag. The proxy only ever
+// passes this through from upstream; it is never written locally.
+func modelDisabledFlag(raw json.RawMessage) bool {
+	var details struct {
+		Disabled bool `json:"disabled"`
 	}
-	details["disabled"] = json.RawMessage("true")
-	out, err := json.Marshal(details)
-	if err != nil {
-		return raw
+	if err := json.Unmarshal(raw, &details); err != nil {
+		return false
 	}
-	return out
+	return details.Disabled
+}
+
+// disabledCount reports how many models the upstream itself marked unavailable,
+// for logging only.
+func (c *catalogSnapshot) disabledCount() int {
+	if c == nil {
+		return 0
+	}
+	n := 0
+	for _, raw := range c.models {
+		if modelDisabledFlag(raw) {
+			n++
+		}
+	}
+	return n
 }
 
 // missingRatio reports how much of prev's catalog is absent from next.
@@ -284,31 +304,27 @@ func missingRatio(prev, next *catalogSnapshot) float64 {
 // reconcileResult is what a merge changed, for logging and tests.
 type reconcileResult struct {
 	Snapshot *catalogSnapshot
-	Miss     map[string]int
 	Restored []string
 	Dropped  []string
 }
 
 // reconcileCatalog merges a freshly fetched authoritative catalog with the
-// previous snapshot:
+// previous snapshot. Only two things survive a deletion:
 //
 //   - a model the alternate endpoint still reports is restored as-is (the shrink
 //     was a backend-shard artifact, not an entitlement change);
-//   - a model missing for the first time is kept with `disabled: true`, so it
-//     stays visible (greyed) and cannot be selected;
-//   - a model missing for maxCatalogMisses consecutive responses is dropped, so
-//     a genuine delisting still disappears from the picker.
+//   - top-level fields the new response stopped sending are inherited.
 //
-// Whatever is kept is also re-inserted into agentModelSorts, because the client
-// only renders ids that appear there.
-func reconcileCatalog(prev *catalogSnapshot, prevMiss map[string]int, next, alt *catalogSnapshot) reconcileResult {
-	res := reconcileResult{Snapshot: next, Miss: map[string]int{}}
+// A model no endpoint serves any more is dropped. It is NOT re-inserted with
+// `disabled: true`: the client renders such a row greyed and unselectable, so
+// synthesising the flag turns an upstream entitlement loss into a picker full of
+// dead entries (observed 11/28 20:02: 21 of 44 rows greyed). Google's own
+// `disabled` flag is passed through untouched either way.
+func reconcileCatalog(prev, next, alt *catalogSnapshot) reconcileResult {
+	res := reconcileResult{Snapshot: next}
 	if next == nil {
 		res.Snapshot = prev
 		return res
-	}
-	for id := range next.models {
-		res.Miss[id] = 0
 	}
 	if prev == nil {
 		next.pruneSorts()
@@ -319,21 +335,15 @@ func reconcileCatalog(prev *catalogSnapshot, prevMiss map[string]int, next, alt 
 		if next.hasModel(id) {
 			continue
 		}
-		if alt != nil && alt.hasModel(id) {
+		if alt != nil && alt.hasModel(id) && !modelDisabledFlag(alt.models[id]) {
 			next.models[id] = alt.models[id]
 			next.ensureInSorts(id)
 			res.Restored = append(res.Restored, id)
 			continue
 		}
-		miss := prevMiss[id] + 1
-		if miss >= maxCatalogMisses {
-			res.Dropped = append(res.Dropped, id)
-			continue
-		}
-		res.Miss[id] = miss
-		next.models[id] = disabledModelRaw(prev.models[id])
-		next.ensureInSorts(id)
-		res.Restored = append(res.Restored, id)
+		// Either no endpoint serves it, or the only sample that still carries it
+		// reports disabled=true — restoring that would render an unselectable row.
+		res.Dropped = append(res.Dropped, id)
 	}
 
 	// Top-level fields are authoritative from the new response; anything the new
@@ -378,7 +388,6 @@ type catalogEntry struct {
 	snapshot  *catalogSnapshot
 	header    http.Header
 	updatedAt time.Time
-	miss      map[string]int
 	summary   string
 	// lastProbe is when the catalog was last cross-checked against the other
 	// endpoint (cold start, shrink arbitration, or the periodic widen).
@@ -569,9 +578,9 @@ func sanitizeCatalogKey(key string) string {
 }
 
 type catalogDiskFile struct {
+	Version   int             `json:"version"`
 	UpdatedAt time.Time       `json:"updatedAt"`
 	LastProbe time.Time       `json:"lastProbe,omitempty"`
-	Miss      map[string]int  `json:"miss,omitempty"`
 	Body      json.RawMessage `json:"body"`
 }
 
@@ -588,6 +597,14 @@ func loadCatalogFromDisk(key string) *catalogEntry {
 	if err := json.Unmarshal(raw, &file); err != nil || len(file.Body) == 0 {
 		return nil
 	}
+	if file.Version != catalogCacheVersion {
+		log.Printf("[Gemini] catalog cache: discarding %s from cache format v%d (want v%d)",
+			key, file.Version, catalogCacheVersion)
+		if path := catalogDiskPath(key); path != "" {
+			os.Remove(path)
+		}
+		return nil
+	}
 	snap, err := parseCatalog(file.Body)
 	if err != nil {
 		return nil
@@ -600,7 +617,6 @@ func loadCatalogFromDisk(key string) *catalogEntry {
 		snapshot:  snap,
 		header:    http.Header{"Content-Type": {"application/json"}},
 		updatedAt: updatedAt,
-		miss:      file.Miss,
 		summary:   summarizeAvailableModels(file.Body),
 		lastProbe: file.LastProbe,
 	}
@@ -616,9 +632,9 @@ func saveCatalogToDisk(key string, entry *catalogEntry) {
 		return
 	}
 	payload, err := json.Marshal(catalogDiskFile{
+		Version:   catalogCacheVersion,
 		UpdatedAt: entry.updatedAt,
 		LastProbe: entry.lastProbe,
-		Miss:      entry.miss,
 		Body:      entry.snapshot.encode(),
 	})
 	if err != nil {

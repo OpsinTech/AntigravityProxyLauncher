@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -86,59 +88,61 @@ func TestParseCatalog_RejectsUnusableBodies(t *testing.T) {
 	}
 }
 
-func TestReconcileCatalog_FirstMissGreysModelOutButKeepsItVisible(t *testing.T) {
+func TestReconcileCatalog_DropsModelsNoEndpointServes(t *testing.T) {
 	prev := mustParse(t, catalogBody("gemini-4-neon-high", "gemini-4-carbon-high", "claude-sonnet-5-5-high"))
 	next := mustParse(t, catalogBody("gemini-4-carbon-high", "claude-sonnet-5-5-high"))
 
-	res := reconcileCatalog(prev, nil, next, nil)
-
-	if !res.Snapshot.hasModel("gemini-4-neon-high") {
-		t.Fatal("model missing from the first shrunken response must be kept")
-	}
-	if !renderedIDs(t, res.Snapshot)["gemini-4-neon-high"] {
-		t.Error("kept model must be re-inserted into agentModelSorts, or the picker hides it")
-	}
-	if !modelDisabled(t, res.Snapshot, "gemini-4-neon-high") {
-		t.Error("kept model must be marked disabled so it cannot be selected")
-	}
-	if res.Miss["gemini-4-neon-high"] != 1 {
-		t.Errorf("miss count = %d, want 1", res.Miss["gemini-4-neon-high"])
-	}
-	if modelDisabled(t, res.Snapshot, "gemini-4-carbon-high") {
-		t.Error("models present upstream must stay enabled")
-	}
-}
-
-func TestReconcileCatalog_SecondMissDropsTheModel(t *testing.T) {
-	prev := mustParse(t, catalogBody("gemini-4-neon-high", "claude-sonnet-5-5-high"))
-	next := mustParse(t, catalogBody("claude-sonnet-5-5-high"))
-
-	res := reconcileCatalog(prev, map[string]int{"gemini-4-neon-high": 1}, next, nil)
+	res := reconcileCatalog(prev, next, nil)
 
 	if res.Snapshot.hasModel("gemini-4-neon-high") {
-		t.Error("model absent for maxCatalogMisses responses must be dropped")
+		t.Fatal("a model no endpoint serves must be dropped, not kept greyed")
 	}
 	if renderedIDs(t, res.Snapshot)["gemini-4-neon-high"] {
-		t.Error("dropped model must not linger in the sorts")
+		t.Error("dropped model must not linger in agentModelSorts")
 	}
 	if len(res.Dropped) != 1 || res.Dropped[0] != "gemini-4-neon-high" {
 		t.Errorf("dropped = %v, want [gemini-4-neon-high]", res.Dropped)
 	}
-	if _, ok := res.Miss["gemini-4-neon-high"]; ok {
-		t.Error("dropped model must not keep a miss counter")
+	for id := range res.Snapshot.models {
+		if modelDisabled(t, res.Snapshot, id) {
+			t.Errorf("%s: reconcile must never synthesise disabled=true", id)
+		}
 	}
 }
 
-func TestReconcileCatalog_PresenceResetsMissCounter(t *testing.T) {
-	prev := mustParse(t, catalogBody("gemini-4-neon-high", "claude-sonnet-5-5-high"))
-	next := mustParse(t, catalogBody("gemini-4-neon-high", "claude-sonnet-5-5-high"))
+func TestReconcileCatalog_NeverSynthesisesDisabled(t *testing.T) {
+	// Regression for 11/28 20:02: the account lost its Gemini 4 entitlement, both
+	// endpoints answered ~21 models, and greying the missing 21 rows filled the
+	// picker with dead entries. Anything absent must simply go.
+	prev := mustParse(t, catalogBody("gemini-4-neon-high", "gemini-4-carbon-high",
+		"gemini-4-argon-high", "claude-sonnet-5-5-high"))
+	next := mustParse(t, catalogBody("claude-sonnet-5-5-high"))
 
-	res := reconcileCatalog(prev, map[string]int{"gemini-4-neon-high": 1}, next, nil)
-	if got := res.Miss["gemini-4-neon-high"]; got != 0 {
-		t.Errorf("miss count = %d, want 0 after the model reappears", got)
+	res := reconcileCatalog(prev, next, nil)
+	if res.Snapshot.modelCount() != 1 {
+		t.Errorf("models = %d, want only the one upstream still serves", res.Snapshot.modelCount())
 	}
-	if modelDisabled(t, res.Snapshot, "gemini-4-neon-high") {
-		t.Error("model present upstream must not be disabled")
+	for _, id := range []string{"gemini-4-neon-high", "gemini-4-carbon-high", "gemini-4-argon-high"} {
+		if renderedIDs(t, res.Snapshot)[id] {
+			t.Errorf("%s still rendered", id)
+		}
+	}
+}
+
+func TestReconcileCatalog_PassesThroughGoogleDisabledFlag(t *testing.T) {
+	body := catalogBody("gemini-4-neon-high", "claude-sonnet-5-5-high")
+	snap := mustParse(t, body)
+	var payload map[string]any
+	if err := json.Unmarshal(snap.encode(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	models := payload["models"].(map[string]any)
+	models["gemini-4-neon-high"].(map[string]any)["disabled"] = true
+	upstream := mustParse(t, mustMarshalBytes(t, payload))
+
+	res := reconcileCatalog(nil, upstream, nil)
+	if !modelDisabled(t, res.Snapshot, "gemini-4-neon-high") {
+		t.Error("an upstream disabled=true must be preserved verbatim")
 	}
 }
 
@@ -147,7 +151,7 @@ func TestReconcileCatalog_AlternateEndpointRestoresWithoutDisabling(t *testing.T
 	next := mustParse(t, catalogBody("claude-sonnet-5-5-high"))
 	alt := mustParse(t, catalogBody("gemini-4-neon-high", "gemini-4-argon-high", "claude-sonnet-5-5-high"))
 
-	res := reconcileCatalog(prev, map[string]int{"gemini-4-neon-high": 1}, next, alt)
+	res := reconcileCatalog(prev, next, alt)
 
 	if !res.Snapshot.hasModel("gemini-4-neon-high") {
 		t.Fatal("model the other endpoint still serves must be restored")
@@ -158,8 +162,8 @@ func TestReconcileCatalog_AlternateEndpointRestoresWithoutDisabling(t *testing.T
 	if !renderedIDs(t, res.Snapshot)["gemini-4-neon-high"] {
 		t.Error("restored model must be back in the sorts")
 	}
-	if _, ok := res.Miss["gemini-4-neon-high"]; ok {
-		t.Error("restored model must not accumulate a miss counter")
+	if len(res.Dropped) != 0 {
+		t.Errorf("dropped = %v, want none", res.Dropped)
 	}
 }
 
@@ -181,7 +185,7 @@ func TestReconcileCatalog_DoesNotShowSortEntriesWithoutModel(t *testing.T) {
 	}}
 	next = mustParse(t, mustMarshalBytes(t, payload))
 
-	res := reconcileCatalog(prev, nil, next, nil)
+	res := reconcileCatalog(prev, next, nil)
 	if renderedIDs(t, res.Snapshot)["ghost-model"] {
 		t.Error("sort entries without a model must be pruned")
 	}
@@ -219,12 +223,11 @@ func TestCatalogStore_DiskRoundTripSurvivesRestart(t *testing.T) {
 	store := newCatalogStore()
 	snap := mustParse(t, catalogBody("gemini-4-neon-high", "claude-sonnet-5-5-high"))
 	snap0 := mustParse(t, catalogBody("claude-sonnet-5-5-high"))
-	res := reconcileCatalog(snap, nil, snap0, nil)
+	res := reconcileCatalog(snap, snap0, nil)
 	store.store(key, &catalogEntry{
 		snapshot:  res.Snapshot,
 		header:    http.Header{"Content-Type": {"application/json"}},
 		updatedAt: time.Now().Add(-time.Minute).Truncate(time.Second),
-		miss:      res.Miss,
 		summary:   summarizeAvailableModels(res.Snapshot.encode()),
 	})
 
@@ -234,11 +237,11 @@ func TestCatalogStore_DiskRoundTripSurvivesRestart(t *testing.T) {
 	if entry == nil {
 		t.Fatal("snapshot was not reloaded from disk")
 	}
-	if !entry.snapshot.hasModel("gemini-4-neon-high") {
-		t.Error("greyed model lost across restart")
+	if entry.snapshot.hasModel("gemini-4-neon-high") {
+		t.Error("a dropped model must not reappear after a restart")
 	}
-	if entry.miss["gemini-4-neon-high"] != 1 {
-		t.Errorf("miss counter lost across restart: %v", entry.miss)
+	if entry.snapshot.modelCount() != 1 {
+		t.Errorf("models = %d, want 1", entry.snapshot.modelCount())
 	}
 	if age := time.Since(entry.updatedAt); age < time.Minute {
 		t.Errorf("entry age = %v, want the persisted ~1m", age)
@@ -249,7 +252,7 @@ func TestCatalogStore_LookupHonoursTTL(t *testing.T) {
 	isolateCatalogCache(t)
 	store := newCatalogStore()
 	snap := mustParse(t, catalogBody("a", "b", "c", "d", "e"))
-	store.store("acct", &catalogEntry{snapshot: snap, header: http.Header{}, updatedAt: time.Now(), miss: nil})
+	store.store("acct", &catalogEntry{snapshot: snap, header: http.Header{}, updatedAt: time.Now()})
 
 	if _, _, ok := store.lookup("acct", catalogCacheTTL); !ok {
 		t.Error("fresh snapshot should hit")
@@ -373,8 +376,20 @@ func TestFetchAvailableModels_SuspiciousShrinkIsCrossChecked(t *testing.T) {
 	if !snap.hasModel("gemini-4-neon-high") {
 		t.Error("gemini-4 model lost despite the other endpoint still serving it")
 	}
-	if len(upstream.seen) != 2 {
-		t.Errorf("expected the shrink to be cross-checked once, hosts seen: %v", upstream.seen)
+	// One primary sample, catalogExtraSamples retries on the same host, then one on
+	// the other endpoint.
+	wantSamples := 1 + catalogExtraSamples + 1
+	if len(upstream.seen) != wantSamples {
+		t.Errorf("expected %d samples for a suspicious shrink, hosts seen: %v", wantSamples, upstream.seen)
+	}
+	altSeen := 0
+	for _, host := range upstream.seen {
+		if host == "cloudcode-pa.googleapis.com" {
+			altSeen++
+		}
+	}
+	if altSeen != 1 {
+		t.Errorf("the alternate endpoint must be probed exactly once, got %d", altSeen)
 	}
 }
 
@@ -522,5 +537,81 @@ func TestFetchAvailableModels_PeriodicWidenEscapesAShrunkenBaseline(t *testing.T
 	}
 	if !renderedIDs(t, snap)["gemini-4-neon-high"] {
 		t.Error("adopted model must be selectable")
+	}
+}
+
+func TestReconcileCatalog_DoesNotRestoreAnUpstreamDisabledModel(t *testing.T) {
+	// The only endpoint still carrying the model reports disabled=true. Restoring it
+	// would render exactly the unselectable grey row this design forbids.
+	body := catalogBody("gemini-4-neon-high", "claude-sonnet-5-5-high")
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["models"].(map[string]any)["gemini-4-neon-high"].(map[string]any)["disabled"] = true
+	altWithDisabled := mustParse(t, mustMarshalBytes(t, payload))
+
+	prev := mustParse(t, catalogBody("gemini-4-neon-high", "claude-sonnet-5-5-high"))
+	next := mustParse(t, catalogBody("claude-sonnet-5-5-high"))
+
+	res := reconcileCatalog(prev, next, altWithDisabled)
+	if res.Snapshot.hasModel("gemini-4-neon-high") {
+		t.Error("a model no endpoint serves enabled must not be restored")
+	}
+	if renderedIDs(t, res.Snapshot)["gemini-4-neon-high"] {
+		t.Error("greyed row would leak into the picker")
+	}
+	if len(res.Dropped) != 1 {
+		t.Errorf("dropped = %v, want the model to be dropped", res.Dropped)
+	}
+}
+
+func TestCatalogSnapshot_DisabledCount(t *testing.T) {
+	body := catalogBody("a", "b")
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["models"].(map[string]any)["a"].(map[string]any)["disabled"] = true
+	snap := mustParse(t, mustMarshalBytes(t, payload))
+	if got := snap.disabledCount(); got != 1 {
+		t.Errorf("disabledCount = %d, want 1", got)
+	}
+	if got := (*catalogSnapshot)(nil).disabledCount(); got != 0 {
+		t.Errorf("nil snapshot disabledCount = %d, want 0", got)
+	}
+}
+
+func TestCatalogStore_DiscardsSnapshotsFromOlderFormat(t *testing.T) {
+	isolateCatalogCache(t)
+	root := catalogCacheDir()
+	if root == "" {
+		t.Fatal("cache dir is not isolated")
+	}
+	key := "acct-legacy"
+
+	// A versionless file models what the previous build persisted: it could carry
+	// locally synthesised disabled flags.
+	legacy := mustParse(t, catalogBody("gemini-4-neon-high", "claude-sonnet-5-5-high"))
+	payload, err := json.Marshal(map[string]any{
+		"updatedAt": time.Now().UTC().Format(time.RFC3339Nano),
+		"body":      json.RawMessage(legacy.encode()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, key+".json")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if entry := newCatalogStore().peek(key); entry != nil {
+		t.Fatalf("a snapshot from the old format must not be loaded, got %d models", entry.snapshot.modelCount())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("the stale file must be removed so it is not re-read on every call")
 	}
 }
