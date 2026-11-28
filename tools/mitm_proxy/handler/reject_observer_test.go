@@ -144,7 +144,7 @@ func TestGeminiHandler_404ObservationDoesNotTouchCatalog(t *testing.T) {
 	if !renderedIDs(t, entry.snapshot)["gemini-4-neon-high"] {
 		t.Error("rejected model must stay selectable: eviction was explicitly not implemented")
 	}
-	if len(entry.miss) != 0 {
-		t.Errorf("observation must not touch miss counters: %v", entry.miss)
+	if entry.snapshot.modelCount() != 5 {
+		t.Errorf("observation must not change the catalog: %d models", entry.snapshot.modelCount())
 	}
 }

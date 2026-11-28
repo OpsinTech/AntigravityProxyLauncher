@@ -316,43 +316,37 @@ func (h *GeminiHandler) handleFetchAvailableModels(r *http.Request, ctx *goproxy
 		return r, resp
 	}
 
-	// 3. Reconcile with the previous snapshot. A suspicious shrink is first
-	// cross-checked against the other Cloud Code endpoint, because the two are
-	// answered by different rollout shards.
+	// 3. Reconcile with the previous snapshot.
+	//
+	// A shrunken answer is usually a rollout bucket, not an entitlement change: the
+	// same host answered 41 and 21 models one second apart (11/27 12:53), so sample
+	// a few more times and take the fullest catalog any endpoint serves.
+	//
+	// Whatever no endpoint serves is genuinely gone for this account — it is dropped
+	// rather than kept as `disabled: true`. A greyed row is unusable anyway, and
+	// synthesising `disabled` turned an upstream entitlement loss into a picker full
+	// of dead entries. Google's own `disabled` flag is passed through untouched.
 	var prev *catalogEntry
 	if entry := h.catalog.peek(key); entry != nil {
 		prev = entry
 	}
-	didProbe := false
 	var alt *catalogSnapshot
-	if prev == nil {
-		// Cold start (first run, or a new account): there is no baseline to compare
-		// against, yet Google answers the catalog from a per-request rollout bucket,
-		// so this single sample can be the shrunken one. Take the richest of a
-		// second sample on the same host and one on the other endpoint.
-		next = h.richestCatalog(ctx, r, bodyBytes, next)
+	didProbe := false
+	enrich := prev == nil || missingRatio(prev.snapshot, next) > catalogShrinkGuard ||
+		time.Since(prev.lastProbe) > catalogProbeInterval
+	if enrich {
 		didProbe = true
-	} else {
-		shrink := missingRatio(prev.snapshot, next) > catalogShrinkGuard
-		overdue := time.Since(prev.lastProbe) > catalogProbeInterval
 		switch {
-		case shrink:
-			log.Printf("[Gemini] fetchAvailableModels: suspicious shrink %.0f%% (%d -> %d models), cross-checking %s",
-				missingRatio(prev.snapshot, next)*100, prev.snapshot.modelCount(), next.modelCount(),
-				alternateCatalogHost(r.URL.Host))
-		case overdue:
-			log.Printf("[Gemini] fetchAvailableModels: periodic widen, cross-checking %s",
-				alternateCatalogHost(r.URL.Host))
+		case prev == nil:
+			log.Printf("[Gemini] fetchAvailableModels: cold start, sampling %d models from %s",
+				next.modelCount(), r.URL.Host)
+		case missingRatio(prev.snapshot, next) > catalogShrinkGuard:
+			log.Printf("[Gemini] fetchAvailableModels: suspicious shrink %.0f%% (%d -> %d models), re-sampling",
+				missingRatio(prev.snapshot, next)*100, prev.snapshot.modelCount(), next.modelCount())
+		default:
+			log.Printf("[Gemini] fetchAvailableModels: periodic widen, re-sampling")
 		}
-		if shrink || overdue {
-			didProbe = true
-			alt = h.probeCatalog(ctx, r, bodyBytes, alternateCatalogHost(r.URL.Host))
-			if alt != nil && alt.modelCount() > next.modelCount() {
-				log.Printf("[Gemini] fetchAvailableModels: cross-check is fuller (%d > %d models), adopting it",
-					alt.modelCount(), next.modelCount())
-				next, alt = alt, nil // folded into next
-			}
-		}
+		next, alt = h.richestCatalog(ctx, r, bodyBytes, next)
 	}
 
 	lastProbe := time.Time{}
@@ -363,17 +357,15 @@ func (h *GeminiHandler) handleFetchAvailableModels(r *http.Request, ctx *goproxy
 		lastProbe = time.Now()
 	}
 	prevSnapshot := (*catalogSnapshot)(nil)
-	prevMiss := map[string]int(nil)
 	if prev != nil {
-		prevSnapshot, prevMiss = prev.snapshot, prev.miss
+		prevSnapshot = prev.snapshot
 	}
-	result := reconcileCatalog(prevSnapshot, prevMiss, next, alt)
+	result := reconcileCatalog(prevSnapshot, next, alt)
 
 	entry := &catalogEntry{
 		snapshot:  result.Snapshot,
 		header:    cloneHeader(resp.Header),
 		updatedAt: time.Now(),
-		miss:      result.Miss,
 		summary:   summarizeAvailableModels(result.Snapshot.encode()),
 		lastProbe: lastProbe,
 	}
@@ -383,17 +375,19 @@ func (h *GeminiHandler) handleFetchAvailableModels(r *http.Request, ctx *goproxy
 
 	switch {
 	case len(result.Dropped) > 0:
-		log.Printf("[Gemini] fetchAvailableModels: dropped after %d consecutive misses: %v",
-			maxCatalogMisses, result.Dropped)
+		log.Printf("[Gemini] fetchAvailableModels: dropped %d model(s) no endpoint serves: %v",
+			len(result.Dropped), result.Dropped)
 	case len(result.Restored) > 0:
-		log.Printf("[Gemini] fetchAvailableModels: kept %d model(s) missing upstream (greyed): %v",
+		log.Printf("[Gemini] fetchAvailableModels: restored %d model(s) still served by another endpoint: %v",
 			len(result.Restored), result.Restored)
 	}
 	if changed {
-		log.Printf("[Gemini] fetchAvailableModels models updated: %s", entry.summary)
+		log.Printf("[Gemini] fetchAvailableModels models updated: [%d, upstream disabled=%d] %s",
+			entry.snapshot.modelCount(), entry.snapshot.disabledCount(), entry.summary)
 	} else {
-		log.Printf("[Gemini] fetchAvailableModels: refreshed in %v, %d models (no change)",
-			time.Since(started).Round(time.Millisecond), entry.snapshot.modelCount())
+		log.Printf("[Gemini] fetchAvailableModels: refreshed in %v, %d models (upstream disabled=%d, no change)",
+			time.Since(started).Round(time.Millisecond), entry.snapshot.modelCount(),
+			entry.snapshot.disabledCount())
 	}
 
 	return r, catalogResponse(r, entry.snapshot, entry.header, h)
@@ -460,21 +454,34 @@ func (h *GeminiHandler) probeCatalog(ctx *goproxy.ProxyCtx, r *http.Request, bod
 	return snap
 }
 
-// richestCatalog returns the snapshot with the most models among the primary
-// answer and up to two extra probes (same host, other endpoint). Cold start only:
-// the bucket that answered first may be the shrunken one, and there is no
-// previous snapshot to notice it.
-func (h *GeminiHandler) richestCatalog(ctx *goproxy.ProxyCtx, r *http.Request, body []byte, primary *catalogSnapshot) *catalogSnapshot {
+// richestCatalog samples the catalog a few more times and returns the fullest
+// answer. Google picks a rollout bucket per request, so one shrunken answer says
+// nothing about the account's entitlements; a retry on the same host often lands
+// in a full bucket, and the other endpoint is answered by a different shard
+// entirely. Sampling only happens on a cold start, on a suspicious shrink, or on
+// the periodic widen — never on a stable refresh.
+func (h *GeminiHandler) richestCatalog(ctx *goproxy.ProxyCtx, r *http.Request, body []byte, primary *catalogSnapshot) (*catalogSnapshot, *catalogSnapshot) {
 	best := primary
-	for _, host := range []string{r.URL.Host, alternateCatalogHost(r.URL.Host)} {
+	var discarded *catalogSnapshot
+	hosts := make([]string, 0, catalogExtraSamples+1)
+	for i := 0; i < catalogExtraSamples; i++ {
+		hosts = append(hosts, r.URL.Host)
+	}
+	hosts = append(hosts, alternateCatalogHost(r.URL.Host))
+	for _, host := range hosts {
 		candidate := h.probeCatalog(ctx, r, body, host)
-		if candidate != nil && candidate.modelCount() > best.modelCount() {
-			log.Printf("[Gemini] fetchAvailableModels: cold-start probe on %s is fuller (%d > %d models), using it",
+		if candidate == nil {
+			continue
+		}
+		if candidate.modelCount() > best.modelCount() {
+			log.Printf("[Gemini] fetchAvailableModels: probe on %s is fuller (%d > %d models), adopting it",
 				host, candidate.modelCount(), best.modelCount())
-			best = candidate
+			best, discarded = candidate, best
+		} else {
+			discarded = candidate
 		}
 	}
-	return best
+	return best, discarded
 }
 
 // summarizeAvailableModels parses a fetchAvailableModels response body and
