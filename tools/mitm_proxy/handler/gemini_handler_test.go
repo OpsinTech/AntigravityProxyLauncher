@@ -198,14 +198,20 @@ func TestGeminiHandler_FetchAvailableModelsCache(t *testing.T) {
 	provReg := provider.NewRegistry()
 	transReg := translator.NewRegistry()
 	h := NewGeminiHandler(provReg, transReg, routingPtr(routingCfg))
+	isolateCatalogCache(t)
 
-	// Pre-populate cache
+	// Pre-populate the per-account snapshot cache.
 	cachedJSON := []byte(`{"models":{"gemini-3.8-flash-high":{"displayName":"Gemini 3.8 Flash (High)"}}}`)
-	h.modelsCache.mu.Lock()
-	h.modelsCache.body = cachedJSON
-	h.modelsCache.updatedAt = time.Now()
-	h.modelsCache.modelsSummary = "gemini-3.8-flash-high=Gemini 3.8 Flash (High);"
-	h.modelsCache.mu.Unlock()
+	snap, err := parseCatalog(cachedJSON)
+	if err != nil {
+		t.Fatalf("parseCatalog: %v", err)
+	}
+	h.catalog.store("anon", &catalogEntry{
+		snapshot:  snap,
+		header:    http.Header{"Content-Type": {"application/json"}},
+		updatedAt: time.Now(),
+		summary:   summarizeAvailableModels(cachedJSON),
+	})
 
 	req := httptest.NewRequest("POST", "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels", nil)
 	ctx := &goproxy.ProxyCtx{}
@@ -225,8 +231,7 @@ func TestGeminiHandler_FetchAvailableModelsCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read response body: %v", err)
 	}
-	if !bytes.Equal(body, cachedJSON) {
-		t.Errorf("Expected body %s, got %s", string(cachedJSON), string(body))
+	if !bytes.Contains(body, []byte("gemini-3.8-flash-high")) {
+		t.Errorf("Expected cached model in body, got %s", string(body))
 	}
 }
-

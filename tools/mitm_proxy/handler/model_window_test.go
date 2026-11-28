@@ -174,11 +174,17 @@ func TestFetchAvailableModels_CachedBodyGetsOverrides(t *testing.T) {
 	}}
 	h := newWindowHandler(rules)
 
-	h.modelsCache.mu.Lock()
-	h.modelsCache.body = []byte(availableModelsBody)
-	h.modelsCache.updatedAt = time.Now()
-	h.modelsCache.header = http.Header{}
-	h.modelsCache.mu.Unlock()
+	isolateCatalogCache(t)
+
+	snap, err := parseCatalog([]byte(availableModelsBody))
+	if err != nil {
+		t.Fatalf("parseCatalog: %v", err)
+	}
+	h.catalog.store("anon", &catalogEntry{
+		snapshot:  snap,
+		header:    http.Header{},
+		updatedAt: time.Now(),
+	})
 
 	req := httptest.NewRequest("POST", "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels", nil)
 	_, resp := h.Handle(req, &goproxy.ProxyCtx{})
@@ -193,8 +199,8 @@ func TestFetchAvailableModels_CachedBodyGetsOverrides(t *testing.T) {
 	if got := jsonInt(t, models["gemini-2.5-pro"]["maxTokens"]); got != 32000 {
 		t.Errorf("cached body not rewritten: maxTokens=%d", got)
 	}
-	// The cache itself must stay raw so a config change applies immediately.
-	if bytes.Contains(h.modelsCache.body, []byte(`"maxTokens":32000`)) {
-		t.Errorf("cache was mutated; overrides should be applied per response")
+	// The stored snapshot must stay raw so a config change applies immediately.
+	if bytes.Contains(h.catalog.peek("anon").snapshot.encode(), []byte(`"maxTokens":32000`)) {
+		t.Errorf("cached snapshot was mutated; overrides should be applied per response")
 	}
 }
